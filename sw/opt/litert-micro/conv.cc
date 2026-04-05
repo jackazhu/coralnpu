@@ -76,32 +76,6 @@ using tflite::micro::GetOptionalTensorData;
 using tflite::micro::GetTensorData;
 using tflite::micro::GetTensorShape;
 
-// #region agent log
-extern "C" {
-volatile uint32_t dbg_conv_hyp_branch __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_filter_h __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_filter_w __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_input_depth __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_output_depth __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_repacked_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_prepare_repacked_size __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_perchannel_filter_arg_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_perchannel_bias_arg_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_perchannel_filter_copy_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv_perchannel_bias_copy_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_filter_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_repacked_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_input_depth __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_output_depth __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_first_in_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_first_out_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_first_w_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_last_w_ptr __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_vl __attribute__((used)) = 0;
-volatile uint32_t dbg_conv1x1_capture_done __attribute__((used)) = 0;
-}
-// #endregion
-
 constexpr size_t kInputBufferSize = 64 * 1024;
 constexpr int kPadPixel = 4;
 
@@ -1292,20 +1266,6 @@ void Conv2D_1x1(const tflite::ConvParams& params,
   const int output_width = output_shape.Dims(2);
   const int output_depth = output_shape.Dims(3);
   const int stride_filter = input_depth;
-  // #region agent log
-  dbg_conv1x1_filter_ptr =
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(filter_data));
-  dbg_conv1x1_repacked_ptr =
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(repacked_weights));
-  dbg_conv1x1_input_depth = static_cast<uint32_t>(input_depth);
-  dbg_conv1x1_output_depth = static_cast<uint32_t>(output_depth);
-  dbg_conv1x1_capture_done = 0;
-  dbg_conv1x1_first_in_ptr = 0;
-  dbg_conv1x1_first_out_ptr = 0;
-  dbg_conv1x1_first_w_ptr = 0;
-  dbg_conv1x1_last_w_ptr = 0;
-  dbg_conv1x1_vl = 0;
-  // #endregion
 
   for (int out_channel_start = 0; out_channel_start < output_depth;) {
     size_t vl = __riscv_vsetvl_e32m4(output_depth - out_channel_start);
@@ -1343,22 +1303,6 @@ void Conv2D_1x1(const tflite::ConvParams& params,
                 batch_base + (in_y * input_width + in_x) * input_depth;
             if (repacked_weights != nullptr) {
               const int8_t* packed_ptr = repacked_weights + out_channel_start;
-              // #region agent log
-              if (!dbg_conv1x1_capture_done) {
-                dbg_conv1x1_first_in_ptr =
-                    static_cast<uint32_t>(reinterpret_cast<uintptr_t>(in_ptr));
-                dbg_conv1x1_first_w_ptr = static_cast<uint32_t>(
-                    reinterpret_cast<uintptr_t>(packed_ptr));
-                dbg_conv1x1_last_w_ptr = static_cast<uint32_t>(
-                    reinterpret_cast<uintptr_t>(
-                        packed_ptr +
-                        (input_depth > 0 ? ((input_depth - 1) * output_depth)
-                                         : 0) +
-                        (vl > 0 ? (vl - 1) : 0)));
-                dbg_conv1x1_vl = static_cast<uint32_t>(vl);
-                dbg_conv1x1_capture_done = 1;
-              }
-              // #endregion
               for (int ic = 0; ic < input_depth; ++ic) {
                 vint8m1_t w =
                     __riscv_vle8_v_i8m1(packed_ptr + ic * output_depth, vl);
@@ -1395,12 +1339,6 @@ void Conv2D_1x1(const tflite::ConvParams& params,
               (batch * output_height * output_width * output_depth) +
               (out_y * output_width * output_depth) + (out_x * output_depth) +
               out_channel_start;
-          // #region agent log
-          if (dbg_conv1x1_capture_done && dbg_conv1x1_first_out_ptr == 0) {
-            dbg_conv1x1_first_out_ptr =
-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(out_ptr));
-          }
-          // #endregion
           __riscv_vse8_v_i8m1(out_ptr, a8, vl);
         }
       }
@@ -1447,27 +1385,6 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
   // pointers directly. This prevents any dependency on allocator address range
   // when vector loads read bias/filter inputs.
   if (filter_height == 1 && filter_width == 1) {
-    // #region agent log
-    // Probe previous behavior (heap copies) for runtime evidence only.
-    auto filter_data_copy_probe =
-        make_aligned_array<int8_t>(16, filter_shape.FlatSize(), filter_data);
-    aligned_array<int32_t> bias_data_copy_probe;
-    if (bias_data) {
-      bias_data_copy_probe =
-          make_aligned_array<int32_t>(16, output_depth, bias_data);
-    }
-    // #endregion
-    // #region agent log
-    dbg_conv_perchannel_filter_arg_ptr =
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(filter_data));
-    dbg_conv_perchannel_bias_arg_ptr =
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bias_data));
-    dbg_conv_perchannel_filter_copy_ptr = static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(filter_data_copy_probe.get()));
-    dbg_conv_perchannel_bias_copy_ptr = static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(bias_data_copy_probe.get()));
-    dbg_conv_hyp_branch = 1;
-    // #endregion
     Conv2D_1x1(params, data, input_shape, input_data, filter_shape, filter_data,
                bias_data, output_shape, output_data,
                data.repacked_weights_generic);
@@ -1494,23 +1411,9 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
   TFLITE_DCHECK_NE(shift_right, nullptr);
   PrepareShiftParams(shift_left.get(), shift_right.get(), output_shift,
                      output_depth);
-  // #region agent log
-  dbg_conv_perchannel_filter_arg_ptr =
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(filter_data));
-  dbg_conv_perchannel_bias_arg_ptr =
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bias_data));
-  dbg_conv_perchannel_filter_copy_ptr = static_cast<uint32_t>(
-      reinterpret_cast<uintptr_t>(filter_data_copy.get()));
-  dbg_conv_perchannel_bias_copy_ptr =
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bias_data_copy.get()));
-  dbg_conv_hyp_branch = 0;
-  // #endregion
 
   if (filter_height == 4 && filter_width == 4 && (input_depth % 4 == 0) &&
       data.repacked_weights != nullptr) {
-    // #region agent log
-    dbg_conv_hyp_branch = 2;
-    // #endregion
     int8_t* tiled_buffer = static_cast<int8_t*>(
         context->GetScratchBuffer(context, data.tiled_input_buffer_index));
     Conv_4x4_OCVectorized(params, data, input_shape, input_data, filter_shape,
@@ -1519,9 +1422,6 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                           data.weight_sums, tiled_buffer);
   } else if (filter_height == 4 && filter_width == 4 &&
              data.repacked_weights_generic != nullptr && output_depth >= 32) {
-    // #region agent log
-    dbg_conv_hyp_branch = 3;
-    // #endregion
     // Prefer generic optimized kernel for large output depth
     Conv2D_4x4(params, data, input_shape, input_data, filter_shape,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
@@ -1539,16 +1439,10 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                         bias_data_copy.get(), output_shape, output_data);
   } else if (filter_height == 4 && filter_width == 4 &&
              data.repacked_weights_generic != nullptr) {
-    // #region agent log
-    dbg_conv_hyp_branch = 4;
-    // #endregion
     Conv2D_4x4(params, data, input_shape, input_data, filter_shape,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
                output_data, data.repacked_weights_generic, context);
   } else {
-    // #region agent log
-    dbg_conv_hyp_branch = 5;
-    // #endregion
     MicroPrintf("Fallback kernel: fh=%d fw=%d id=%d od=%d", filter_height,
                 filter_width, input_depth, output_depth);
     tflite::reference_integer_ops::ConvPerChannel(
@@ -1649,14 +1543,6 @@ TfLiteStatus ConvPrepare(TfLiteContext* context, TfLiteNode* node) {
   const int filter_height = filter->dims->data[1];
   const int filter_width = filter->dims->data[2];
   data->repacked_weights_generic = nullptr;
-  // #region agent log
-  dbg_conv_prepare_filter_h = static_cast<uint32_t>(filter_height);
-  dbg_conv_prepare_filter_w = static_cast<uint32_t>(filter_width);
-  dbg_conv_prepare_input_depth = static_cast<uint32_t>(input_depth);
-  dbg_conv_prepare_output_depth = static_cast<uint32_t>(output_depth);
-  dbg_conv_prepare_repacked_ptr = 0;
-  dbg_conv_prepare_repacked_size = 0;
-  // #endregion
 
   if ((filter_height == 4 && filter_width == 4) ||
       (filter_height == 1 && filter_width == 1)) {
@@ -1665,11 +1551,6 @@ TfLiteStatus ConvPrepare(TfLiteContext* context, TfLiteNode* node) {
         output_depth * filter_height * filter_width * input_depth;
     data->repacked_weights_generic = static_cast<int8_t*>(
         context->AllocatePersistentBuffer(context, repacked_size));
-    // #region agent log
-    dbg_conv_prepare_repacked_ptr = static_cast<uint32_t>(
-        reinterpret_cast<uintptr_t>(data->repacked_weights_generic));
-    dbg_conv_prepare_repacked_size = static_cast<uint32_t>(repacked_size);
-    // #endregion
     if (data->repacked_weights_generic) {
       const int8_t* original_weights = filter->data.int8;
       int8_t* dst = data->repacked_weights_generic;
