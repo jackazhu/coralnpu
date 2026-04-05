@@ -1434,7 +1434,7 @@ void Conv2D_3x3(const tflite::ConvParams& params,
                 }
               } else {
                 const int8_t* f_ptr =
-                    filter_data + (out_channel_start * stride_filter) +
+                    filter_data + (out_channel_start * input_depth) +
                     (ky * filter_width * input_depth) + (kx * input_depth);
                 for (int ic = 0; ic < input_depth; ++ic) {
                   vint8m1_t w =
@@ -1516,9 +1516,18 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
     return;
   }
   if (filter_height == 3 && filter_width == 3) {
-    Conv2D_3x3(params, data, input_shape, input_data, filter_shape, filter_data,
-               bias_data, output_shape, output_data,
-               data.repacked_weights_generic);
+    // The optimized 3x3 kernel currently assumes repacked weights. If repacked
+    // weights are unavailable, use the reference kernel for correctness.
+    if (data.repacked_weights_generic != nullptr) {
+      Conv2D_3x3(params, data, input_shape, input_data, filter_shape,
+                 filter_data, bias_data, output_shape, output_data,
+                 data.repacked_weights_generic);
+    } else {
+      tflite::reference_integer_ops::ConvPerChannel(
+          params, output_multiplier, output_shift, input_shape, input_data,
+          filter_shape, filter_data, bias_shape, bias_data, output_shape,
+          output_data);
+    }
     return;
   }
 
