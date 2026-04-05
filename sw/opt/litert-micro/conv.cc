@@ -1348,6 +1348,131 @@ void Conv2D_1x1(const tflite::ConvParams& params,
   }
 }
 
+// Specialized 3x3 Conv2D kernel vectorized over output channels.
+void Conv2D_3x3(const tflite::ConvParams& params,
+                const coralnpu_v2::opt::litert_micro::OpDataConvCustom& data,
+                const tflite::RuntimeShape& input_shape,
+                const int8_t* input_data,
+                const tflite::RuntimeShape& filter_shape,
+                const int8_t* filter_data, const int32_t* bias_data,
+                const tflite::RuntimeShape& output_shape, int8_t* output_data,
+                const int8_t* repacked_weights) {
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int pad_width = params.padding_values.width;
+  const int pad_height = params.padding_values.height;
+  const int32_t input_offset = params.input_offset;
+  const int32_t output_offset = params.output_offset;
+
+  const int batches = input_shape.Dims(0);
+  const int input_height = input_shape.Dims(1);
+  const int input_width = input_shape.Dims(2);
+  const int input_depth = input_shape.Dims(3);
+  const int filter_height = filter_shape.Dims(1);
+  const int filter_width = filter_shape.Dims(2);
+  TFLITE_DCHECK_EQ(filter_height, 3);
+  TFLITE_DCHECK_EQ(filter_width, 3);
+
+  const int output_height = output_shape.Dims(1);
+  const int output_width = output_shape.Dims(2);
+  const int output_depth = output_shape.Dims(3);
+  const int stride_filter = filter_height * filter_width * input_depth;
+
+  for (int out_channel_start = 0; out_channel_start < output_depth;) {
+    size_t vl = __riscv_vsetvl_e32m4(output_depth - out_channel_start);
+
+    vint32m4_t bias_v = __riscv_vmv_v_x_i32m4(0, vl);
+    if (bias_data != nullptr) {
+      bias_v = __riscv_vle32_v_i32m4(bias_data + out_channel_start, vl);
+    }
+    vint32m4_t mult_v = __riscv_vle32_v_i32m4(
+        data.per_channel_output_multiplier + out_channel_start, vl);
+    vint32m4_t shift_v = __riscv_vle32_v_i32m4(
+        data.per_channel_output_shift + out_channel_start, vl);
+
+    vint32m4_t left_shift_v = __riscv_vmax_vx_i32m4(shift_v, 0, vl);
+    vint32m4_t right_shift_v =
+        __riscv_vmax_vx_i32m4(__riscv_vneg_v_i32m4(shift_v, vl), 0, vl);
+    vint32m4_t shift_minus_1_v = __riscv_vsub_vx_i32m4(right_shift_v, 1, vl);
+    vbool8_t mask_gt0 = __riscv_vmsgt_vx_i32m4_b8(right_shift_v, 0, vl);
+    vint32m4_t nudge_v = __riscv_vmv_v_x_i32m4(0, vl);
+    nudge_v = __riscv_vsll_vv_i32m4_mu(
+        mask_gt0, nudge_v, __riscv_vmv_v_x_i32m4(1, vl),
+        __riscv_vreinterpret_v_i32m4_u32m4(shift_minus_1_v), vl);
+
+    for (int batch = 0; batch < batches; ++batch) {
+      const int8_t* batch_base =
+          input_data + batch * input_height * input_width * input_depth;
+      for (int out_y = 0; out_y < output_height; ++out_y) {
+        const int in_y_origin = (out_y * stride_height) - pad_height;
+        for (int out_x = 0; out_x < output_width; ++out_x) {
+          const int in_x_origin = (out_x * stride_width) - pad_width;
+          vint32m4_t acc = bias_v;
+
+          for (int ky = 0; ky < 3; ++ky) {
+            const int in_y = in_y_origin + dilation_height_factor * ky;
+            if (in_y < 0 || in_y >= input_height) continue;
+            for (int kx = 0; kx < 3; ++kx) {
+              const int in_x = in_x_origin + dilation_width_factor * kx;
+              if (in_x < 0 || in_x >= input_width) continue;
+
+              const int8_t* in_ptr =
+                  batch_base + (in_y * input_width + in_x) * input_depth;
+              if (repacked_weights != nullptr) {
+                const int8_t* packed_ptr =
+                    repacked_weights +
+                    (ky * filter_width * input_depth * output_depth) +
+                    (kx * input_depth * output_depth) + out_channel_start;
+                for (int ic = 0; ic < input_depth; ++ic) {
+                  vint8m1_t w =
+                      __riscv_vle8_v_i8m1(packed_ptr + ic * output_depth, vl);
+                  vint16m2_t w16 = __riscv_vwadd_vx_i16m2(w, 0, vl);
+                  int16_t v = static_cast<int16_t>(in_ptr[ic] + input_offset);
+                  acc = __riscv_vwmacc_vx_i32m4(acc, v, w16, vl);
+                }
+              } else {
+                const int8_t* f_ptr =
+                    filter_data + (out_channel_start * stride_filter) +
+                    (ky * filter_width * input_depth) + (kx * input_depth);
+                for (int ic = 0; ic < input_depth; ++ic) {
+                  vint8m1_t w =
+                      __riscv_vlse8_v_i8m1(f_ptr + ic, stride_filter, vl);
+                  vint16m2_t w16 = __riscv_vwadd_vx_i16m2(w, 0, vl);
+                  int16_t v = static_cast<int16_t>(in_ptr[ic] + input_offset);
+                  acc = __riscv_vwmacc_vx_i32m4(acc, v, w16, vl);
+                }
+              }
+            }
+          }
+
+          acc = __riscv_vsll_vv_i32m4(
+              acc, __riscv_vreinterpret_v_i32m4_u32m4(left_shift_v), vl);
+          acc = __riscv_vsmul_vv_i32m4(acc, mult_v, 0, vl);
+          acc = __riscv_vadd_vv_i32m4(acc, nudge_v, vl);
+          acc = __riscv_vsra_vv_i32m4(
+              acc, __riscv_vreinterpret_v_i32m4_u32m4(right_shift_v), vl);
+          acc = __riscv_vadd_vx_i32m4(acc, output_offset, vl);
+          acc = __riscv_vmax_vx_i32m4(acc, data.output_activation_min, vl);
+          acc = __riscv_vmin_vx_i32m4(acc, data.output_activation_max, vl);
+          vint16m2_t a16 = __riscv_vnclip_wx_i16m2(acc, 0, 0, vl);
+          vint8m1_t a8 = __riscv_vnclip_wx_i8m1(a16, 0, 0, vl);
+
+          int8_t* out_ptr =
+              output_data +
+              (batch * output_height * output_width * output_depth) +
+              (out_y * output_width * output_depth) + (out_x * output_depth) +
+              out_channel_start;
+          __riscv_vse8_v_i8m1(out_ptr, a8, vl);
+        }
+      }
+    }
+
+    out_channel_start += vl;
+  }
+}
+
 void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                     const int32_t* output_multiplier,
                     const int32_t* output_shift, TfLiteContext* context,
@@ -1386,6 +1511,12 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
   // when vector loads read bias/filter inputs.
   if (filter_height == 1 && filter_width == 1) {
     Conv2D_1x1(params, data, input_shape, input_data, filter_shape, filter_data,
+               bias_data, output_shape, output_data,
+               data.repacked_weights_generic);
+    return;
+  }
+  if (filter_height == 3 && filter_width == 3) {
+    Conv2D_3x3(params, data, input_shape, input_data, filter_shape, filter_data,
                bias_data, output_shape, output_data,
                data.repacked_weights_generic);
     return;
@@ -1545,8 +1676,9 @@ TfLiteStatus ConvPrepare(TfLiteContext* context, TfLiteNode* node) {
   data->repacked_weights_generic = nullptr;
 
   if ((filter_height == 4 && filter_width == 4) ||
+      (filter_height == 3 && filter_width == 3) ||
       (filter_height == 1 && filter_width == 1)) {
-    // Check for generic optimization opportunity (1x1 and 4x4).
+    // Check for generic optimization opportunity (1x1/3x3/4x4).
     size_t repacked_size =
         output_depth * filter_height * filter_width * input_depth;
     data->repacked_weights_generic = static_cast<int8_t*>(

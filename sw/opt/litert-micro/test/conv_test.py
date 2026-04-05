@@ -191,6 +191,9 @@ def run_conv_sim_test():
         # 6. Conv2D_1x1
         {"input": [1, 12, 12, 32], "filter": [64, 1, 1, 32], "stride": (1, 1)},
         {"input": [1, 11, 11, 64], "filter": [32, 1, 1, 64], "stride": (2, 2)},
+        # 7. Conv2D_3x3
+        {"input": [1, 12, 12, 32], "filter": [32, 3, 3, 32], "stride": (1, 1)},
+        {"input": [1, 11, 11, 16], "filter": [24, 3, 3, 16], "stride": (2, 2)},
     ]
 
     for tc in test_cases:
