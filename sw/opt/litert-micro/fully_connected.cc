@@ -55,12 +55,6 @@ void FullyConnected(
     const tflite::RuntimeShape& filter_shape, const int8_t* filter_data,
     const tflite::RuntimeShape& bias_shape, const int32_t* bias_data,
     const tflite::RuntimeShape& output_shape, int8_t* output_data) {
-  if (TryFullyConnectedCustomGemm(params, input_shape, input_data, filter_shape,
-                                  filter_data, bias_shape, bias_data,
-                                  output_shape, output_data)) {
-    return;
-  }
-
   const int32_t input_offset = params.input_offset;
   const int32_t filter_offset = params.weights_offset;
   const int32_t output_offset = params.output_offset;
@@ -183,12 +177,16 @@ TfLiteStatus FullyConnectedEval(TfLiteContext* context, TfLiteNode* node) {
     const int32_t* bias_data = tflite::micro::GetOptionalTensorData<int32_t>(bias);
     int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
 
-    // C-phase bootstrap: try custom GEMM path first, then fall back to RVV path.
+    // C-phase bootstrap: custom GEMM path is compiled behind feature/capability
+    // flags so default builds keep the A/B hot path unchanged.
+#if defined(CORALNPU_ENABLE_CUSTOM_GEMM) && CORALNPU_ENABLE_CUSTOM_GEMM && \
+    defined(CORALNPU_HAS_CUSTOM_GEMM) && CORALNPU_HAS_CUSTOM_GEMM
     if (TryFullyConnectedCustomGemm(params, input_shape, input_data, filter_shape,
                                     filter_data, bias_shape, bias_data,
                                     output_shape, output_data)) {
       return kTfLiteOk;
     }
+#endif
 
     FullyConnected(params, input_shape, input_data, filter_shape, filter_data,
                    bias_shape, bias_data, output_shape, output_data);
