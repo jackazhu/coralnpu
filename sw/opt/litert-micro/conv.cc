@@ -79,6 +79,9 @@ using tflite::micro::GetTensorShape;
 constexpr size_t kInputBufferSize = 64 * 1024;
 constexpr int kPadPixel = 4;
 
+uint32_t g_conv2d_eval_count = 0;
+uint32_t g_conv2d_fallback_count = 0;
+
 // Helper to pad input. Returns pointer to the start of VALID data (0,0) in the
 // buffer.
 const int8_t* PadInput(int8_t* dst_buffer, const int8_t* val_ptr,
@@ -1599,6 +1602,7 @@ TfLiteStatus ConvEval(TfLiteContext* context, TfLiteNode* node) {
   const auto& params =
       *(reinterpret_cast<TfLiteConvParams*>(node->builtin_data));
   const auto& data = *(static_cast<const OpDataConvCustom*>(node->user_data));
+  g_conv2d_eval_count++;
 
   TfLiteEvalTensor* output = GetEvalOutput(context, node, kConvOutputTensor);
   const TfLiteEvalTensor* input = GetEvalInput(context, node, kConvInputTensor);
@@ -1622,15 +1626,26 @@ TfLiteStatus ConvEval(TfLiteContext* context, TfLiteNode* node) {
           break;
         }
         default:
+          g_conv2d_fallback_count++;
           return tflite::Register_CONV_2D().invoke(context, node);
       }
       break;
     }
     default:
+      g_conv2d_fallback_count++;
       return tflite::Register_CONV_2D().invoke(context, node);
   }
   return kTfLiteOk;
 }
+
+void ResetConv2dEvalCounters() {
+  g_conv2d_eval_count = 0;
+  g_conv2d_fallback_count = 0;
+}
+
+uint32_t GetConv2dEvalCount() { return g_conv2d_eval_count; }
+
+uint32_t GetConv2dFallbackCount() { return g_conv2d_fallback_count; }
 
 void* ConvInit(TfLiteContext* context, const char* buffer, size_t length) {
   // Default tflite::ConvInit as a custom structure (OpDataConvCustom) is used
