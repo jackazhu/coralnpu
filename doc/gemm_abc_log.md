@@ -10,7 +10,7 @@
 | 阶段 | 状态 | 负责人 | 开始日期 | 完成日期 | 说明 |
 |---|---|---|---|---|---|
 | A（RVV GEMM 软件优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成完整验证矩阵与 benchmark 收益确认 |
-| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮有效优化；新增确定性 benchmark 基线，后续迭代按“仅保留正收益”推进 |
+| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮有效优化；B2/B3/B4/B5 无实质收益并已回退，当前转向瓶颈定位驱动优化 |
 | C（指令+工具链联动） | Not Started | TBD | TBD | TBD | 依赖 B 阶段稳定结果 |
 
 状态枚举建议：`Not Started` / `In Progress` / `Blocked` / `Done`
@@ -200,6 +200,7 @@
 | A-002 | 2026-04-06 | Action | 修复 `toolchain/host_clang/BUILD`：GCC13/Clang18 include + host link path + 显式 `-isystem`，`npusim_run_mobilenet` 端到端通过（`inference_status=0`） | A | Done |
 | A-003 | 2026-04-06 | Action | 新增 `bcresnet` 仿真回归入口并纳入 `running_tflite`，同时在 cocotb/npusim 输出统一 `PERF_CYCLES` 用于场景级性能跟踪 | A | Done |
 | B-004 | 2026-04-06 | Action | `cocotb_fully_connected` 改为固定 seed（默认 12345，可环境变量覆盖）以降低 benchmark 噪声；B4（`mul_rs` FULL_PUSH）在确定性基线下无 cycle 收益，已回退 | B | Done |
+| B-005 | 2026-04-06 | Action | B5 尝试在 `rvv_backend` 的 EX 结果 FIFO（`u_res_ff`）启用 `FULL_PUSH` 以降低满队列同拍 pop 的反压气泡；确定性基线下 `fc_64x64 opt_cycles` 仍为 12872，无实质收益，已回退（`bb2623b`） | B | Done |
 | B-001 | 2026-04-06 | Action | B 第 2 轮尝试（加深 mul 结果缓冲）在 `fc_64x64` 上 `opt_cycles 12839 -> 12851`，确认为负优化，已用 `git revert` 回退（`8d5a6b3`） | B | Done |
 | B-002 | 2026-04-06 | Action | B 第 3 轮尝试（arbiter fast path）在 `fc_64x64` 上 `opt_cycles 12839 -> 12854`，确认为负优化，已用 `git revert` 回退（`3c0e237`） | B | Done |
 
