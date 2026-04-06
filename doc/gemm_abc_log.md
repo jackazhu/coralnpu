@@ -10,7 +10,7 @@
 | 阶段 | 状态 | 负责人 | 开始日期 | 完成日期 | 说明 |
 |---|---|---|---|---|---|
 | A（RVV GEMM 软件优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成完整验证矩阵与 benchmark 收益确认 |
-| B（mulmac/mac 后端优化） | Not Started | TBD | TBD | TBD | 依赖 A 阶段基线与结果 |
+| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮后端调度优化实现与全量回归验证 |
 | C（指令+工具链联动） | Not Started | TBD | TBD | TBD | 依赖 B 阶段稳定结果 |
 
 状态枚举建议：`Not Started` / `In Progress` / `Blocked` / `Done`
@@ -133,6 +133,38 @@
 #### 阶段结论
 - 是否满足 B 进入 C 条件：`Yes/No`
 - 若 No，阻塞原因：
+
+### B-Entry-001
+- 日期：2026-04-06
+- Git commit：`b2b12e0`
+- 改动摘要：在 `rvv_backend_mulmac.sv` 中新增“单 uop 双 lane 可用时的 round-robin 分发”，避免持续偏置 lane0 导致的局部背压放大；双 uop 与单 lane ready 语义保持不变。
+- 风险评估：低（仅调整 mulmac wrapper 的分发策略，不改指令语义与 `mac_unit` 运算逻辑）。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| FC 功能+性能 | `bazel test --cache_test_results=no --test_output=streamed //tests/cocotb/tutorial/tfmicro:cocotb_fully_connected` | PASS | `fc_64x64` 的 `opt_cycles` 下降 |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| RVV 算术回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_arithmetic_cocotb_test` | PASS | 功能无回退 |
+| RVV 访存回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_load_store_test` | PASS | 功能无回退 |
+| Highmem 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_highmem_tests` | PASS | 功能无回退 |
+| ITCM/DTCM 512KB 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_itcm512kb_dtcm512kb_tests` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=516177367` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=327413977` |
+
+#### Benchmark 对照（B vs A）
+| Workload | Metric | Before(A) | After(B) | Delta | 结论 |
+|---|---|---|---|---|---|
+| fc_16x16 | ref_cycles | 6643 | 6643 | 0.00% | 无变化 |
+| fc_16x16 | opt_cycles | 2750 | 2750 | 0.00% | 无变化 |
+| fc_16x16 | speedup(ref/opt) | 2.42x | 2.42x | 0.00x | 无变化 |
+| fc_64x64 | ref_cycles | 90310 | 90268 | -0.05% | 波动可忽略 |
+| fc_64x64 | opt_cycles | 12881 | 12839 | -0.33% | 小幅改善 |
+| fc_64x64 | speedup(ref/opt) | 7.01x | 7.03x | +0.02x | 小幅改善 |
+
+#### 阶段结论
+- 是否满足 B 进入 C 条件：`No`
+- 若 No，阻塞原因：当前仅完成 B 首轮低风险调度优化，收益已验证但幅度较小；需继续推进 `mac_unit` 更深层流水/回压优化并复测收益稳定性。
 
 ## C 阶段日志
 
