@@ -1,6 +1,7 @@
 from bazel_tools.tools.python.runfiles import runfiles
 from coralnpu_v2_sim_utils import CoralNPUV2Simulator
 import numpy as np
+import argparse
 
 
 def _run_single_elf(elf_rlocation: str, input_data: np.ndarray):
@@ -33,7 +34,7 @@ def _run_single_elf(elf_rlocation: str, input_data: np.ndarray):
     return output, status, int(npu_sim.get_cycle_count())
 
 
-def run_bcresnet(num_samples: int = 5, seed: int = 123):
+def run_bcresnet(num_samples: int = 5, seed: int = 123, fail_on_diff: bool = True):
     print("Running BCResNet KWS accuracy validation...")
     rng = np.random.default_rng(seed)
 
@@ -89,9 +90,22 @@ def run_bcresnet(num_samples: int = 5, seed: int = 123):
     )
     print("ACCURACY_SUMMARY_END")
 
-    if max_abs_diff != 0:
+    if fail_on_diff and max_abs_diff != 0:
         raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    run_bcresnet()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num_samples", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--allow_diff",
+        action="store_true",
+        help="Do not fail process when differential mismatch exists",
+    )
+    args = parser.parse_args()
+    run_bcresnet(
+        num_samples=args.num_samples,
+        seed=args.seed,
+        fail_on_diff=not args.allow_diff,
+    )
