@@ -10,8 +10,8 @@
 | 阶段 | 状态 | 负责人 | 开始日期 | 完成日期 | 说明 |
 |---|---|---|---|---|---|
 | A（RVV GEMM 软件优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成完整验证矩阵与 benchmark 收益确认 |
-| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮有效优化；B2/B3/B4/B5 无实质收益并已回退，当前转向瓶颈定位驱动优化 |
-| C（指令+工具链联动） | Not Started | TBD | TBD | TBD | 依赖 B 阶段稳定结果 |
+| B（mulmac/mac 后端优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成首轮有效优化并完成多轮负/零收益尝试回退；阶段收口，保留净正收益改动 |
+| C（指令+工具链联动） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成 C 阶段入口骨架（feature flag + capability + fallback）并通过回归 |
 
 状态枚举建议：`Not Started` / `In Progress` / `Blocked` / `Done`
 
@@ -166,6 +166,24 @@
 - 是否满足 B 进入 C 条件：`No`
 - 若 No，阻塞原因：当前仅完成 B 首轮低风险调度优化，收益已验证但幅度较小；需继续推进 `mac_unit` 更深层流水/回压优化并复测收益稳定性。
 
+### B-Entry-002
+- 日期：2026-04-06
+- Git commit：`bb600b2`, `94cbe53`
+- 改动摘要：完成 B2/B3/B4/B5 多轮后端尝试复盘，负收益或零收益改动均已回退，阶段仅保留 B1 净正收益路径；按用户指令结束 B 阶段并切换到 C 阶段推进。
+- 风险评估：低（收口动作以回退和文档归档为主，不新增运行时行为变化）。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| FC 功能+性能（确定性） | `bazel test --cache_test_results=no --test_output=streamed //tests/cocotb/tutorial/tfmicro:cocotb_fully_connected` | PASS | 保留路径基线：`fc_64x64 opt_cycles=12872` |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `PERF_CYCLES=516177367` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `PERF_CYCLES=327413977` |
+
+#### 阶段结论
+- 是否满足 B 进入 C 条件：`Yes`
+- 结论说明：按“仅保留正收益改动”完成 B 阶段收口，现已转入 C 阶段指令/工具链联动实现。
+
 ## C 阶段日志
 
 ### C-Entry 模板
@@ -174,22 +192,29 @@
 - 改动摘要（含 decode/mpact/toolchain）：
 - fallback 验证方式：
 
+### C-Entry-001
+- 日期：2026-04-06
+- Git commit：`ab281d8`, `a5df790`
+- 改动摘要（含 decode/mpact/toolchain）：在 `sw/opt/litert-micro` 增加 `custom_gemm` 模块，建立 C 阶段 custom GEMM 路径入口（`feature flag + capability`）并在 `fully_connected` 中接入“先尝试 custom 路径，失败则 fallback 到现有 RVV 路径”的框架。
+- fallback 验证方式：默认编译配置下 `CORALNPU_ENABLE_CUSTOM_GEMM` 与 `CORALNPU_HAS_CUSTOM_GEMM` 均关闭，`TryFullyConnectedCustomGemm` 返回 false，执行路径回落到既有 RVV 实现。
+
 #### 验证结果
 | 测试项 | 命令 | 结果 | 备注 |
 |---|---|---|---|
-| A/B 全量关键回归 | `同前` | TBD |  |
-| C 指令链路专项 | `TBD` | TBD |  |
-| fallback 对照 | `TBD` | TBD |  |
+| FC 功能+性能 | `bazel test --cache_test_results=no --test_output=streamed //tests/cocotb/tutorial/tfmicro:cocotb_fully_connected` | PASS | fallback 生效；`fc_64x64 opt_cycles=12782`，未劣化 |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 行为与 B 阶段兼容 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=516177367` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=327413977` |
 
-#### Benchmark 对照（C vs B）
-| Workload | Metric | Before(B) | After(C) | Delta | 结论 |
+#### Benchmark 对照（C-Entry-001 vs B 基线）
+| Workload | Metric | Before(B) | After(C-001) | Delta | 结论 |
 |---|---|---|---|---|---|
-| matmul_case_1 | latency_p50 | TBD | TBD | TBD | TBD |
-| matmul_case_1 | throughput | TBD | TBD | TBD | TBD |
+| fc_64x64 | opt_cycles | 12872 | 12782 | -0.70% | 持平偏优（fallback 不退化） |
+| fc_64x64 | speedup(ref/opt) | 7.02x | 7.07x | +0.05x | 持平偏优 |
 
 #### 阶段结论
-- 是否满足 C 完成条件：`Yes/No`
-- 若 No，阻塞原因：
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：当前仅完成 C 路径骨架，尚未接入真实 custom GEMM 指令编码/decode/mpact/simulator/toolchain 端到端链路。
 
 ## 5. 决策与问题跟踪
 
@@ -203,5 +228,6 @@
 | B-005 | 2026-04-06 | Action | B5 尝试在 `rvv_backend` 的 EX 结果 FIFO（`u_res_ff`）启用 `FULL_PUSH` 以降低满队列同拍 pop 的反压气泡；确定性基线下 `fc_64x64 opt_cycles` 仍为 12872，无实质收益，已回退（`bb2623b`） | B | Done |
 | B-001 | 2026-04-06 | Action | B 第 2 轮尝试（加深 mul 结果缓冲）在 `fc_64x64` 上 `opt_cycles 12839 -> 12851`，确认为负优化，已用 `git revert` 回退（`8d5a6b3`） | B | Done |
 | B-002 | 2026-04-06 | Action | B 第 3 轮尝试（arbiter fast path）在 `fc_64x64` 上 `opt_cycles 12839 -> 12854`，确认为负优化，已用 `git revert` 回退（`3c0e237`） | B | Done |
+| C-001 | 2026-04-06 | Action | 启动 C 阶段：新增 `custom_gemm` 模块并在 `fully_connected` 接入 custom-path + fallback 骨架，默认配置下确认 fallback 回归通过且不退化 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
