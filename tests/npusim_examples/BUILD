@@ -35,13 +35,11 @@ py_binary(
     data = [
         ":run_bcresnet_binary",
         ":run_bcresnet_ref_binary",
-        "models/bcresnet_sc35_int8.tflite",
     ],
     deps = [
         "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
         "@bazel_tools//tools/python/runfiles",
         requirement("numpy"),
-        requirement("tensorflow"),
     ],
 )
 
