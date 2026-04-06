@@ -104,7 +104,7 @@ cocotb_test_suite(
         ],
         "data": [
             "run_mobilenet_v1_025_partial_binary.elf",
-            "//tests/npusim_examples:run_bcresnet_binary.elf",
+            "//tests/npusim_examples:run_bcresnet_binary",
         ],
     },
     vcs_build_args = VCS_BUILD_ARGS,
