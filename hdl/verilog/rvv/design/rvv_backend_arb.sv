@@ -117,50 +117,72 @@ module rvv_backend_arb(
     logic [1:0] grant_mac;
     logic [1:0] req_alu;
     logic [1:0] grant_alu;
+    logic       prefer_alu_port0;
 
     // port0 and port1
-    assign grant[0] = req[0];
-    assign grant[1] = req[1];
-    assign req_mac  = grant[0]^grant[1] ? req[5:4] : 'b0;
+    assign req_mac = req[5:4];
+    assign req_alu = req[1:0];
 
     arb_round_robin #(.REQ_NUM(2))
     arb_mac (.grant(grant_mac), .req(req_mac), .clk(clk), .rst_n(rst_n));
 
+    arb_round_robin #(.REQ_NUM(2))
+    arb_alu01 (.grant(grant_alu), .req(req_alu), .clk(clk), .rst_n(rst_n));
+
+    always_ff @(posedge clk or negedge rst_n) begin
+      if (!rst_n) begin
+        prefer_alu_port0 <= 1'b1;
+      end else if ((|req_alu) && (|req_mac)) begin
+        // Keep fairness when ALU and MULMAC are both backlogged.
+        prefer_alu_port0 <= ~prefer_alu_port0;
+      end
+    end
+
     always_comb begin
-      case(grant[1:0])
-        2'b11: begin
-          result_valid[0] = 1'b1;
-          result[0]       = item[0];
-          result_valid[1] = 1'b1;
-          result[1]       = item[1];
-          grant[4]        = 'b0;
-          grant[5]        = 'b0;
-        end
-        2'b01: begin
-          result_valid[0] = 1'b1;
-          result[0]       = item[0];
-          result_valid[1] = |grant_mac;
-          result[1]       = grant_mac[0] ? item[4] : item[5];
+      grant[0]      = 'b0;
+      grant[1]      = 'b0;
+      grant[4]      = 'b0;
+      grant[5]      = 'b0;
+      result_valid[0] = 'b0;
+      result_valid[1] = 'b0;
+      result[0]     = item[0];
+      result[1]     = item[0];
+
+      if ((|req_alu) && (|req_mac)) begin
+        if (prefer_alu_port0) begin
+          grant[0]        = grant_alu[0];
+          grant[1]        = grant_alu[1];
           grant[4]        = grant_mac[0];
           grant[5]        = grant_mac[1];
+          result_valid[0] = |grant_alu;
+          result_valid[1] = |grant_mac;
+          result[0]       = grant_alu[0] ? item[0] : item[1];
+          result[1]       = grant_mac[0] ? item[4] : item[5];
+        end else begin
+          grant[0]        = grant_alu[0];
+          grant[1]        = grant_alu[1];
+          grant[4]        = grant_mac[0];
+          grant[5]        = grant_mac[1];
+          result_valid[0] = |grant_mac;
+          result_valid[1] = |grant_alu;
+          result[0]       = grant_mac[0] ? item[4] : item[5];
+          result[1]       = grant_alu[0] ? item[0] : item[1];
         end
-        2'b00: begin
-          result_valid[0] = req[4];
-          result[0]       = item[4];
-          result_valid[1] = req[5];
-          result[1]       = item[5];
-          grant[4]        = req[4];
-          grant[5]        = req[5];
-        end
-        default: begin
-          result_valid[0] = 'b0;
-          result[0]       = item[0];
-          result_valid[1] = 'b0;
-          result[1]       = item[0];
-          grant[4]        = 'b0;
-          grant[5]        = 'b0;
-        end      
-      endcase
+      end else if (|req_alu) begin
+        result_valid[0] = req[0];
+        result[0]       = item[0];
+        result_valid[1] = req[1];
+        result[1]       = item[1];
+        grant[0]        = req[0];
+        grant[1]        = req[1];
+      end else begin
+        result_valid[0] = req[4];
+        result[0]       = item[4];
+        result_valid[1] = req[5];
+        result[1]       = item[5];
+        grant[4]        = req[4];
+        grant[5]        = req[5];
+      end
     end
 
     // port2 and port3
