@@ -70,6 +70,7 @@
 ### 3.2 系统级验证
 - Simulator 端到端：
   - `//tests/npusim_examples:npusim_run_mobilenet`
+  - `//tests/npusim_examples:npusim_run_bcresnet`
 - 必要时补充板级执行：
   - `coralnpu_test_utils/run_matmul_test.py`
 
@@ -91,6 +92,7 @@
 - 吞吐：GMAC/s 或等效指标
 - 能效：mJ/inference（硬件可测时）
 - 资源：代码体积、关键内存占用（ITCM/DTCM/arena）
+- 回归日志：每个 case 必须输出可解析的 `PERF_CYCLES|...|cycles=<N>` 记录
 
 ### 4.3 统计规则
 - 每组至少运行 10 次，去除 warmup。

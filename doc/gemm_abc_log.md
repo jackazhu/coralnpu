@@ -25,6 +25,7 @@
 - 频率与内存配置：sim 默认时钟；Highmem ITCM/DTCM 配置
 - Benchmark 输入集版本：`tests/cocotb/tutorial/tfmicro:cocotb_fully_connected`
 - 随机种子：cocotb seed 自动；numpy 默认随机
+- cycles 记录格式：`PERF_CYCLES|runner=<...>|test=<...>|cycles=<N>`
 
 #### 验证命令
 - 正确性：
@@ -35,6 +36,7 @@
   - `bazel test //tests/cocotb:rvv_highmem_tests`
   - `bazel test //tests/cocotb:rvv_itcm512kb_dtcm512kb_tests`
   - `bazel run //tests/npusim_examples:npusim_run_mobilenet`
+  - `bazel run //tests/npusim_examples:npusim_run_bcresnet`
 
 #### 基线 benchmark 结果
 | Workload | Config | Metric | Value | 单位 | 备注 |
@@ -132,5 +134,6 @@
 | D-001 | TBD | Decision | 采用 A -> B -> C 顺序推进 | A/B/C | Open |
 | I-001 | 2026-04-06 | Issue | `npusim_run_mobilenet` 在 host_clang 构建阶段找不到 `<array>` 头文件 | A | Resolved |
 | A-002 | 2026-04-06 | Action | 修复 `toolchain/host_clang/BUILD`：GCC13/Clang18 include + host link path + 显式 `-isystem`，`npusim_run_mobilenet` 端到端通过（`inference_status=0`） | A | Done |
+| A-003 | 2026-04-06 | Action | 新增 `bcresnet` 仿真回归入口并纳入 `running_tflite`，同时在 cocotb/npusim 输出统一 `PERF_CYCLES` 用于场景级性能跟踪 | A | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
