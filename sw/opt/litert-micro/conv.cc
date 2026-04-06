@@ -1598,11 +1598,11 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
 TfLiteStatus ConvEval(TfLiteContext* context, TfLiteNode* node) {
   TFLITE_DCHECK(node->user_data != nullptr);
   TFLITE_DCHECK(node->builtin_data != nullptr);
+  g_conv2d_eval_count++;
 
   const auto& params =
       *(reinterpret_cast<TfLiteConvParams*>(node->builtin_data));
   const auto& data = *(static_cast<const OpDataConvCustom*>(node->user_data));
-  g_conv2d_eval_count++;
 
   TfLiteEvalTensor* output = GetEvalOutput(context, node, kConvOutputTensor);
   const TfLiteEvalTensor* input = GetEvalInput(context, node, kConvInputTensor);
