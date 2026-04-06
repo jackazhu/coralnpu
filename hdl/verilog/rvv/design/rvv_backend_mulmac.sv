@@ -49,11 +49,18 @@ MUL_RS_t          [`NUM_MUL-1:0]  mac_uop;
 logic             [`NUM_MUL-1:0]  mac_ready;
 logic             [`NUM_MUL-1:0]  mac_pipe_vld_en;
 logic             [`NUM_MUL-1:0]  mac_pipe_data_en;
+logic                               single_issue_rr;
+logic                               issue_single_uop;
+logic                               both_mac_lanes_ready;
+logic                               route_single_to_lane1;
 
 genvar                            i;
 
 // handshake
 assign mac_ready = ~res_valid_ex2rob | res_ready_rob2ex;
+assign both_mac_lanes_ready = &mac_ready;
+assign issue_single_uop = uop_valid_rs2ex[0] & ~uop_valid_rs2ex[1];
+assign route_single_to_lane1 = both_mac_lanes_ready & issue_single_uop & single_issue_rr;
 
 always_comb begin
   case(mac_ready)
@@ -74,10 +81,22 @@ always_comb begin
       pop[1]        = 'b0;
     end
     2'b11: begin
-      mac_valid[0]  = uop_valid_rs2ex[0];
-      mac_valid[1]  = uop_valid_rs2ex[1];
-      mac_uop[0]    = mac_uop_rs2ex[0];
-      mac_uop[1]    = mac_uop_rs2ex[1];
+      if (uop_valid_rs2ex[1]) begin
+        mac_valid[0]  = uop_valid_rs2ex[0];
+        mac_valid[1]  = uop_valid_rs2ex[1];
+        mac_uop[0]    = mac_uop_rs2ex[0];
+        mac_uop[1]    = mac_uop_rs2ex[1];
+      end else if (route_single_to_lane1) begin
+        mac_valid[0]  = 'b0;
+        mac_valid[1]  = uop_valid_rs2ex[0];
+        mac_uop[0]    = 'b0;
+        mac_uop[1]    = mac_uop_rs2ex[0];
+      end else begin
+        mac_valid[0]  = uop_valid_rs2ex[0];
+        mac_valid[1]  = 'b0;
+        mac_uop[0]    = mac_uop_rs2ex[0];
+        mac_uop[1]    = 'b0;
+      end
       pop[0]        = uop_valid_rs2ex[0];
       pop[1]        = uop_valid_rs2ex[1];
     end
@@ -90,6 +109,17 @@ always_comb begin
       pop[1]        = 'b0;
     end
   endcase
+end
+
+always_ff @(posedge clk or negedge rst_n) begin
+  if (!rst_n) begin
+    single_issue_rr <= 1'b0;
+  end else if (trap_flush_rvv) begin
+    single_issue_rr <= 1'b0;
+  end else if (both_mac_lanes_ready && issue_single_uop) begin
+    // Balance single-uop traffic across two lanes to reduce lane-local backpressure.
+    single_issue_rr <= ~single_issue_rr;
+  end
 end
 
 // pipe register enable
