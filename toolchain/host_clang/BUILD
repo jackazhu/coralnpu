@@ -54,7 +54,13 @@ cc_toolchain_config(
         "/usr/include/x86_64-linux-gnu",
         "/usr/include",
     ],
-    cxx_flags = ["-std=c++17"],
+    cxx_flags = [
+        "-std=c++17",
+        "-isystem/usr/include/c++/13",
+        "-isystem/usr/include/x86_64-linux-gnu/c++/13",
+        "-isystem/usr/include/c++/13/backward",
+        "-isystem/usr/lib/llvm-18/lib/clang/18/include",
+    ],
     dbg_compile_flags = ["-g"],
     host_system_name = "local",
     link_flags = [
