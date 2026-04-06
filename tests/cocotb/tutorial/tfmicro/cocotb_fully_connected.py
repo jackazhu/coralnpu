@@ -14,6 +14,7 @@
 
 import cocotb
 import numpy as np
+import os
 from bazel_tools.tools.python.runfiles import runfiles
 from coralnpu_test_utils.sim_test_fixture import Fixture
 
@@ -63,7 +64,10 @@ class FullyConnectedTester:
             ],
         )
 
-        rng = np.random.default_rng()
+        # Use deterministic random input for stable cycle comparison in B/C-phase tuning.
+        seed = int(os.environ.get("FC_TEST_SEED", "12345"))
+        print(f"fc_test_seed={seed}", flush=True)
+        rng = np.random.default_rng(seed)
         input_data = rng.integers(-128, 128, self.input_shape, dtype=np.int8).flatten()
         filter_data = rng.integers(
             -128, 128, self.filter_shape, dtype=np.int8
