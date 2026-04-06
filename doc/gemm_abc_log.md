@@ -130,6 +130,7 @@
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
 |---|---|---|---|---|---|
 | D-001 | TBD | Decision | 采用 A -> B -> C 顺序推进 | A/B/C | Open |
-| I-001 | 2026-04-06 | Issue | `npusim_run_mobilenet` 在 host_clang 构建阶段找不到 `<array>` 头文件 | A | Open |
+| I-001 | 2026-04-06 | Issue | `npusim_run_mobilenet` 在 host_clang 构建阶段找不到 `<array>` 头文件 | A | Resolved |
+| A-002 | 2026-04-06 | Action | 修复 `toolchain/host_clang/BUILD`：GCC13/Clang18 include + host link path + 显式 `-isystem`，`npusim_run_mobilenet` 端到端通过（`inference_status=0`） | A | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
