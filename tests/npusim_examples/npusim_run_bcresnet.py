@@ -34,7 +34,12 @@ def _run_single_elf(elf_rlocation: str, input_data: np.ndarray):
     return output, status, int(npu_sim.get_cycle_count())
 
 
-def run_bcresnet(num_samples: int = 5, seed: int = 123, fail_on_diff: bool = True):
+def run_bcresnet(
+    num_samples: int = 5,
+    seed: int = 123,
+    fail_on_diff: bool = True,
+    mode: str = "full",
+):
     print("Running BCResNet KWS accuracy validation...")
     rng = np.random.default_rng(seed)
 
@@ -52,9 +57,18 @@ def run_bcresnet(num_samples: int = 5, seed: int = 123, fail_on_diff: bool = Tru
         ref_output, ref_status, cyc_ref = _run_single_elf(
             "coralnpu_hw/tests/npusim_examples/run_bcresnet_ref_binary.elf", input_data
         )
-        npu_output, npu_status, cyc_npu = _run_single_elf(
-            "coralnpu_hw/tests/npusim_examples/run_bcresnet_binary.elf", input_data
-        )
+        if mode == "full":
+            npu_elf = "coralnpu_hw/tests/npusim_examples/run_bcresnet_binary.elf"
+        elif mode == "conv_only":
+            npu_elf = "coralnpu_hw/tests/npusim_examples/run_bcresnet_conv_only_binary.elf"
+        elif mode == "depthwise_only":
+            npu_elf = (
+                "coralnpu_hw/tests/npusim_examples/run_bcresnet_depthwise_only_binary.elf"
+            )
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        npu_output, npu_status, cyc_npu = _run_single_elf(npu_elf, input_data)
 
         if ref_status != 0 or npu_status != 0:
             raise RuntimeError(
@@ -103,9 +117,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not fail process when differential mismatch exists",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["full", "conv_only", "depthwise_only"],
+        default="full",
+        help="Choose which optimized registration set to validate",
+    )
     args = parser.parse_args()
     run_bcresnet(
         num_samples=args.num_samples,
         seed=args.seed,
         fail_on_diff=not args.allow_diff,
+        mode=args.mode,
     )
