@@ -82,6 +82,17 @@ constexpr int kPadPixel = 4;
 uint32_t g_conv2d_eval_count = 0;
 uint32_t g_conv2d_fallback_count = 0;
 
+inline int8_t RequantizeToInt8(int32_t acc, int32_t multiplier, int32_t shift,
+                               int32_t output_offset, int32_t activation_min,
+                               int32_t activation_max) {
+  int32_t q =
+      tflite::MultiplyByQuantizedMultiplier(acc, multiplier, shift) +
+      output_offset;
+  q = std::max(q, activation_min);
+  q = std::min(q, activation_max);
+  return static_cast<int8_t>(q);
+}
+
 // Helper to pad input. Returns pointer to the start of VALID data (0,0) in the
 // buffer.
 const int8_t* PadInput(int8_t* dst_buffer, const int8_t* val_ptr,
@@ -1569,18 +1580,39 @@ void Conv2D_5x5(const tflite::ConvParams& params,
                 (batch * output_height * output_width * output_depth) +
                 (out_y * output_width * output_depth) + (out_x * output_depth) +
                 out_channel_start;
-            int32_t acc_buf[32];
-            TFLITE_DCHECK_LE(vl, 32);
-            __riscv_vse32_v_i32m4(acc_buf, acc, vl);
-            for (size_t lane = 0; lane < vl; ++lane) {
-              const int out_channel = out_channel_start + lane;
-              int32_t q = tflite::MultiplyByQuantizedMultiplier(
-                  acc_buf[lane], data.per_channel_output_multiplier[out_channel],
-                  data.per_channel_output_shift[out_channel]);
-              q += output_offset;
-              q = std::max(q, data.output_activation_min);
-              q = std::min(q, data.output_activation_max);
-              out_ptr[lane] = static_cast<int8_t>(q);
+            const int32_t* block_multiplier =
+                data.per_channel_output_multiplier + out_channel_start;
+            const int32_t* block_shift =
+                data.per_channel_output_shift + out_channel_start;
+
+            if (vl == 1) {
+              int32_t acc_lane[1];
+              __riscv_vse32_v_i32m4(acc_lane, acc, vl);
+              out_ptr[0] = RequantizeToInt8(
+                  acc_lane[0], block_multiplier[0], block_shift[0],
+                  output_offset, data.output_activation_min,
+                  data.output_activation_max);
+            } else if (vl == 2) {
+              int32_t acc_lane[2];
+              __riscv_vse32_v_i32m4(acc_lane, acc, vl);
+              out_ptr[0] = RequantizeToInt8(
+                  acc_lane[0], block_multiplier[0], block_shift[0],
+                  output_offset, data.output_activation_min,
+                  data.output_activation_max);
+              out_ptr[1] = RequantizeToInt8(
+                  acc_lane[1], block_multiplier[1], block_shift[1],
+                  output_offset, data.output_activation_min,
+                  data.output_activation_max);
+            } else {
+              int32_t acc_lane[32];
+              TFLITE_DCHECK_LE(vl, 32);
+              __riscv_vse32_v_i32m4(acc_lane, acc, vl);
+              for (size_t lane = 0; lane < vl; ++lane) {
+                out_ptr[lane] = RequantizeToInt8(
+                    acc_lane[lane], block_multiplier[lane], block_shift[lane],
+                    output_offset, data.output_activation_min,
+                    data.output_activation_max);
+              }
             }
           }
         }
