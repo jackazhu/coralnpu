@@ -1000,7 +1000,8 @@ module rvv_backend
             .M            (1),
             .N            (1),
             .ASYNC_RSTN   (1'b1),
-            .DEPTH        (2)
+            .DEPTH        (2),
+            .FULL_PUSH    (1'b1)
         ) u_res_ff (
           // global
             .clk          (clk),
