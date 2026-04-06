@@ -34,6 +34,8 @@ py_binary(
     srcs = ["npusim_run_bcresnet.py"],
     data = [
         ":run_bcresnet_binary",
+        ":run_bcresnet_conv_only_binary",
+        ":run_bcresnet_depthwise_only_binary",
         ":run_bcresnet_ref_binary",
     ],
     deps = [
@@ -98,6 +100,48 @@ coralnpu_v2_binary(
     semihosting = True,
     visibility = ["//visibility:public"],
     deps = [
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+coralnpu_v2_binary(
+    name = "run_bcresnet_conv_only_binary",
+    srcs = [
+        "bcresnet_sc35_int8_tflite_cc",
+        "run_bcresnet_conv_only.cc",
+    ],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
+    dtcm_size_kbytes = 1024,  # Highmem
+    itcm_size_kbytes = 1024,  # Highmem
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sw/opt:rvv_opt",
+        "//sw/opt/litert-micro:conv",
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+coralnpu_v2_binary(
+    name = "run_bcresnet_depthwise_only_binary",
+    srcs = [
+        "bcresnet_sc35_int8_tflite_cc",
+        "run_bcresnet_depthwise_only.cc",
+    ],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
+    dtcm_size_kbytes = 1024,  # Highmem
+    itcm_size_kbytes = 1024,  # Highmem
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sw/opt:rvv_opt",
+        "//sw/opt/litert-micro:depthwise_conv",
         "@tflite_micro//tensorflow/lite/micro:micro_framework",
         "@tflite_micro//tensorflow/lite/micro:micro_log",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",
