@@ -597,8 +597,7 @@ module rvv_backend
         .N              (`NUM_MUL),
         .ASYNC_RSTN     (1'b1),
         .DEPTH          (`MUL_RS_DEPTH),
-        .CHAOS_PUSH     (1'b1),
-        .FULL_PUSH      (1'b1)
+        .CHAOS_PUSH     (1'b1)
     ) u_mul_rs (
       // global
         .clk            (clk),
