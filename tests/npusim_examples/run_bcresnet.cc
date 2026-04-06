@@ -26,7 +26,7 @@
 #include "tensorflow/lite/micro/micro_profiler_interface.h"
 #include "tensorflow/lite/micro/kernels/micro_ops.h"
 #include "tensorflow/lite/micro/system_setup.h"
-#include "tests/npusim_examples/bcresnet_sc35_float_tflite.h"
+#include "tests/npusim_examples/bcresnet_sc35_int8_tflite.h"
 
 namespace {
 inline uint32_t ReadCycle() {
@@ -101,7 +101,7 @@ class CycleProfiler : public tflite::MicroProfilerInterface {
   uint32_t num_events_ = 0;
 };
 
-using BcResnetOpResolver = tflite::MicroMutableOpResolver<11>;
+using BcResnetOpResolver = tflite::MicroMutableOpResolver<10>;
 using coralnpu_v2::opt::litert_micro::GetConv2dEvalCount;
 using coralnpu_v2::opt::litert_micro::GetConv2dFallbackCount;
 using coralnpu_v2::opt::litert_micro::GetDepthwiseConv2dEvalCount;
@@ -123,7 +123,6 @@ TfLiteStatus RegisterOps(BcResnetOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(op_resolver.AddSum());
   TF_LITE_ENSURE_STATUS(op_resolver.AddLogistic());
   TF_LITE_ENSURE_STATUS(op_resolver.AddLogSoftmax());
-  TF_LITE_ENSURE_STATUS(op_resolver.AddMean());
   return kTfLiteOk;
 }
 }  // namespace
@@ -131,15 +130,15 @@ TfLiteStatus RegisterOps(BcResnetOpResolver& op_resolver) {
 extern "C" {
 constexpr size_t kTensorArenaSize = 4 * 1024 * 1024;
 int8_t inference_status = -1;
-float inference_input[1 * 1 * 40 * 101]
+int8_t inference_input[1 * 1 * 40 * 101]
     __attribute__((section(".data"), aligned(16)));
-float inference_output[35] __attribute__((section(".data"), aligned(16)));
+int8_t inference_output[35] __attribute__((section(".data"), aligned(16)));
 uint8_t tensor_arena[kTensorArenaSize]
     __attribute__((section(".extdata"), aligned(16)));
 }
 
 int main(int argc, char** argv) {
-  const tflite::Model* model = tflite::GetModel(g_bcresnet_sc35_float_model_data);
+  const tflite::Model* model = tflite::GetModel(g_bcresnet_sc35_int8_model_data);
   BcResnetOpResolver op_resolver;
   CycleProfiler profiler;
   RegisterOps(op_resolver);

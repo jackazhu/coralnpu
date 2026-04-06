@@ -1586,6 +1586,7 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
                output_data, data.repacked_weights_generic, context);
   } else {
+    g_conv2d_fallback_count++;
     MicroPrintf("Fallback kernel: fh=%d fw=%d id=%d od=%d", filter_height,
                 filter_width, input_depth, output_depth);
     tflite::reference_integer_ops::ConvPerChannel(

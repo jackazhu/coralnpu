@@ -66,10 +66,10 @@ coralnpu_v2_binary(
 coralnpu_v2_binary(
     name = "run_bcresnet_binary",
     srcs = [
-        "bcresnet_sc35_float_tflite_cc",
+        "bcresnet_sc35_int8_tflite_cc",
         "run_bcresnet.cc",
     ],
-    hdrs = ["bcresnet_sc35_float_tflite.h"],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
     dtcm_size_kbytes = 1024,  # Highmem
     itcm_size_kbytes = 1024,  # Highmem
     semihosting = True,
@@ -86,13 +86,13 @@ coralnpu_v2_binary(
 )
 
 generate_cc_arrays(
-    name = "bcresnet_sc35_float_tflite_cc",
-    src = "models/bcresnet_sc35_float.tflite",
-    out = "bcresnet_sc35_float_tflite.cc",
+    name = "bcresnet_sc35_int8_tflite_cc",
+    src = "models/bcresnet_sc35_int8.tflite",
+    out = "bcresnet_sc35_int8_tflite.cc",
 )
 
 generate_cc_arrays(
-    name = "bcresnet_sc35_float_tflite_h",
-    src = "models/bcresnet_sc35_float.tflite",
-    out = "bcresnet_sc35_float_tflite.h",
+    name = "bcresnet_sc35_int8_tflite_h",
+    src = "models/bcresnet_sc35_int8.tflite",
+    out = "bcresnet_sc35_int8_tflite.h",
 )
