@@ -10,7 +10,7 @@
 | 阶段 | 状态 | 负责人 | 开始日期 | 完成日期 | 说明 |
 |---|---|---|---|---|---|
 | A（RVV GEMM 软件优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成完整验证矩阵与 benchmark 收益确认 |
-| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮后端调度优化实现与全量回归验证 |
+| B（mulmac/mac 后端优化） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成首轮有效优化；新增确定性 benchmark 基线，后续迭代按“仅保留正收益”推进 |
 | C（指令+工具链联动） | Not Started | TBD | TBD | TBD | 依赖 B 阶段稳定结果 |
 
 状态枚举建议：`Not Started` / `In Progress` / `Blocked` / `Done`
@@ -199,6 +199,7 @@
 | I-001 | 2026-04-06 | Issue | `npusim_run_mobilenet` 在 host_clang 构建阶段找不到 `<array>` 头文件 | A | Resolved |
 | A-002 | 2026-04-06 | Action | 修复 `toolchain/host_clang/BUILD`：GCC13/Clang18 include + host link path + 显式 `-isystem`，`npusim_run_mobilenet` 端到端通过（`inference_status=0`） | A | Done |
 | A-003 | 2026-04-06 | Action | 新增 `bcresnet` 仿真回归入口并纳入 `running_tflite`，同时在 cocotb/npusim 输出统一 `PERF_CYCLES` 用于场景级性能跟踪 | A | Done |
+| B-004 | 2026-04-06 | Action | `cocotb_fully_connected` 改为固定 seed（默认 12345，可环境变量覆盖）以降低 benchmark 噪声；B4（`mul_rs` FULL_PUSH）在确定性基线下无 cycle 收益，已回退 | B | Done |
 | B-001 | 2026-04-06 | Action | B 第 2 轮尝试（加深 mul 结果缓冲）在 `fc_64x64` 上 `opt_cycles 12839 -> 12851`，确认为负优化，已用 `git revert` 回退（`8d5a6b3`） | B | Done |
 | B-002 | 2026-04-06 | Action | B 第 3 轮尝试（arbiter fast path）在 `fc_64x64` 上 `opt_cycles 12839 -> 12854`，确认为负优化，已用 `git revert` 回退（`3c0e237`） | B | Done |
 
