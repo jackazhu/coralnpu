@@ -56,42 +56,22 @@ inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
                            const uint8_t* rshift, int32_t out_offset,
                            int8_t out_min, int8_t out_max, int8_t* out_data,
                            int out_w, int out_d) {
-  constexpr uint32_t vxrm = 0;  // round-to-nearest-up
+  // Scalar post-processing to guarantee bit-exact behavior with TFLM reference
+  // quantization path (MultiplyByQuantizedMultiplier + clamp).
+  for (int out_x = 0; out_x < out_w; ++out_x) {
+    for (int c = 0; c < out_d; ++c) {
+      int32_t acc = accs[out_x * out_d + c];
+      if (bias_data) {
+        acc += bias_data[c];
+      }
 
-  int out_ch = 0;
-  size_t out_ch_rem = out_d;
-  while (out_ch_rem > 0) {
-    const size_t vl = __riscv_vsetvl_e32m8(out_ch_rem);
-    const vint32m8_t bias_val =
-        bias_data ? __riscv_vle32_v_i32m8(&bias_data[out_ch], vl)
-                  : __riscv_vmv_v_x_i32m8(0, vl);
-    const vint32m8_t mul_val = __riscv_vle32_v_i32m8(&multiplier[out_ch], vl);
-    const vuint8m2_t lsh8 = __riscv_vle8_v_u8m2(&lshift[out_ch], vl);
-    const vuint8m2_t rsh8 = __riscv_vle8_v_u8m2(&rshift[out_ch], vl);
-    const vuint32m8_t lsh32 = __riscv_vzext_vf4_u32m8(lsh8, vl);
-    const vuint32m8_t rsh32 = __riscv_vzext_vf4_u32m8(rsh8, vl);
-    for (int out_x = 0; out_x < out_w; ++out_x) {
-      vint32m8_t acc = __riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl);
-      // Apply bias
-      acc = __riscv_vadd_vv_i32m8(acc, bias_val, vl);
-      // int8 uses left shift BEFORE multiplier
-      acc = __riscv_vsll_vv_i32m8(acc, lsh32, vl);
-      acc = __riscv_vsmul_vv_i32m8(acc, mul_val, vxrm, vl);
-      // int8 uses rounding right shift
-      acc = __riscv_vssra_vv_i32m8(acc, rsh32, vxrm, vl);
-      // Apply offset
-      acc = __riscv_vadd_vx_i32m8(acc, out_offset, vl);
-      // Narrow down, saturating
-      const vint16m4_t out16 = __riscv_vnclip_wx_i16m4(acc, 0, vxrm, vl);
-      vint8m2_t out8 = __riscv_vnclip_wx_i8m2(out16, 0, vxrm, vl);
-      // Apply clamping
-      out8 = __riscv_vmax_vx_i8m2(out8, out_min, vl);
-      out8 = __riscv_vmin_vx_i8m2(out8, out_max, vl);
-      // Write out
-      __riscv_vse8_v_i8m2(&out_data[out_x * out_d + out_ch], out8, vl);
+      const int shift = (int8_t)lshift[c] - (int8_t)rshift[c];
+      int32_t q = tflite::MultiplyByQuantizedMultiplier(acc, multiplier[c], shift);
+      q += out_offset;
+      q = std::max<int32_t>(q, out_min);
+      q = std::min<int32_t>(q, out_max);
+      out_data[out_x * out_d + c] = static_cast<int8_t>(q);
     }
-    out_ch += vl;
-    out_ch_rem -= vl;
   }
 }
 
