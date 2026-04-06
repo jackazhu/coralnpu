@@ -20,6 +20,7 @@
 #include <cstdint>
 
 #include "sw/opt/litert-micro/accumulator_util.h"
+#include "sw/opt/litert-micro/custom_gemm.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/fully_connected.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
@@ -54,6 +55,12 @@ void FullyConnected(
     const tflite::RuntimeShape& filter_shape, const int8_t* filter_data,
     const tflite::RuntimeShape& bias_shape, const int32_t* bias_data,
     const tflite::RuntimeShape& output_shape, int8_t* output_data) {
+  if (TryFullyConnectedCustomGemm(params, input_shape, input_data, filter_shape,
+                                  filter_data, bias_shape, bias_data,
+                                  output_shape, output_data)) {
+    return;
+  }
+
   const int32_t input_offset = params.input_offset;
   const int32_t filter_offset = params.weights_offset;
   const int32_t output_offset = params.output_offset;
@@ -163,15 +170,28 @@ TfLiteStatus FullyConnectedEval(TfLiteContext* context, TfLiteNode* node) {
       context, node, tflite::kFullyConnectedOutputTensor);
 
   if (input->type == kTfLiteInt8 && filter->type == kTfLiteInt8) {
-    FullyConnected(tflite::FullyConnectedParamsQuantized(data),
-                   tflite::micro::GetTensorShape(input),
-                   tflite::micro::GetTensorData<int8_t>(input),
-                   tflite::micro::GetTensorShape(filter),
-                   tflite::micro::GetTensorData<int8_t>(filter),
-                   tflite::micro::GetTensorShape(bias),
-                   tflite::micro::GetOptionalTensorData<int32_t>(bias),
-                   tflite::micro::GetTensorShape(output),
-                   tflite::micro::GetTensorData<int8_t>(output));
+    const tflite::FullyConnectedParams params =
+        tflite::FullyConnectedParamsQuantized(data);
+    const tflite::RuntimeShape input_shape = tflite::micro::GetTensorShape(input);
+    const tflite::RuntimeShape filter_shape =
+        tflite::micro::GetTensorShape(filter);
+    const tflite::RuntimeShape bias_shape = tflite::micro::GetTensorShape(bias);
+    const tflite::RuntimeShape output_shape =
+        tflite::micro::GetTensorShape(output);
+    const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+    const int8_t* filter_data = tflite::micro::GetTensorData<int8_t>(filter);
+    const int32_t* bias_data = tflite::micro::GetOptionalTensorData<int32_t>(bias);
+    int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+
+    // C-phase bootstrap: try custom GEMM path first, then fall back to RVV path.
+    if (TryFullyConnectedCustomGemm(params, input_shape, input_data, filter_shape,
+                                    filter_data, bias_shape, bias_data,
+                                    output_shape, output_data)) {
+      return kTfLiteOk;
+    }
+
+    FullyConnected(params, input_shape, input_data, filter_shape, filter_data,
+                   bias_shape, bias_data, output_shape, output_data);
     return kTfLiteOk;
   }
 

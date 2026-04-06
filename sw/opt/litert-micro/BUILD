@@ -84,9 +84,20 @@ cc_library(
     target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
     deps = [
         ":accumulator_util",
+        ":custom_gemm",
         "@tflite_micro//tensorflow/lite/kernels/internal:reference_base",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",
         "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
+    ],
+)
+
+cc_library(
+    name = "custom_gemm",
+    srcs = ["custom_gemm.cc"],
+    hdrs = ["custom_gemm.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
     ],
 )
 
