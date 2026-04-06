@@ -46,6 +46,9 @@ using tflite::micro::GetOptionalTensorData;
 using tflite::micro::GetTensorData;
 using tflite::micro::GetTensorShape;
 
+uint32_t g_depthwise_conv2d_eval_count = 0;
+uint32_t g_depthwise_conv2d_fallback_count = 0;
+
 namespace {
 // TODO(davidgao): move away?
 inline int idiv_ceil(int x, int y) { return (x + y - 1) / y; }
@@ -508,6 +511,7 @@ TfLiteStatus DepthwiseConvEval(TfLiteContext* context, TfLiteNode* node) {
   const auto& params =
       *(reinterpret_cast<TfLiteDepthwiseConvParams*>(node->builtin_data));
   const auto& data = *(static_cast<const OpDataConvCustom*>(node->user_data));
+  g_depthwise_conv2d_eval_count++;
 
   int32_t* accs_buf = static_cast<int32_t*>(
       context->GetScratchBuffer(context, data.accs_buffer_index));
@@ -538,14 +542,27 @@ TfLiteStatus DepthwiseConvEval(TfLiteContext* context, TfLiteNode* node) {
           break;
         }
         default:
+          g_depthwise_conv2d_fallback_count++;
           return tflite::Register_DEPTHWISE_CONV_2D().invoke(context, node);
       }
       break;
     }
     default:
+      g_depthwise_conv2d_fallback_count++;
       return tflite::Register_DEPTHWISE_CONV_2D().invoke(context, node);
   }
   return kTfLiteOk;
+}
+
+void ResetDepthwiseConv2dEvalCounters() {
+  g_depthwise_conv2d_eval_count = 0;
+  g_depthwise_conv2d_fallback_count = 0;
+}
+
+uint32_t GetDepthwiseConv2dEvalCount() { return g_depthwise_conv2d_eval_count; }
+
+uint32_t GetDepthwiseConv2dFallbackCount() {
+  return g_depthwise_conv2d_fallback_count;
 }
 
 TFLMRegistration Register_DEPTHWISE_CONV_2D() {

@@ -15,6 +15,8 @@
 #ifndef SW_OPT_LITERT_MICRO_DEPTHWISE_CONV_H_
 #define SW_OPT_LITERT_MICRO_DEPTHWISE_CONV_H_
 
+#include <stdint.h>
+
 #include "tensorflow/lite/micro/kernels/depthwise_conv.h"
 
 namespace coralnpu_v2::opt::litert_micro {
@@ -27,6 +29,11 @@ void DepthwiseConvPerChannel(
     int8_t* out_data, int32_t* accs_buf);
 
 TFLMRegistration Register_DEPTHWISE_CONV_2D();
+
+// Runtime counters for optimized DepthwiseConv2D registration fallback behavior.
+void ResetDepthwiseConv2dEvalCounters();
+uint32_t GetDepthwiseConv2dEvalCount();
+uint32_t GetDepthwiseConv2dFallbackCount();
 }  // namespace coralnpu_v2::opt::litert_micro
 
 #endif  // SW_OPT_LITERT_MICRO_DEPTHWISE_CONV_H_

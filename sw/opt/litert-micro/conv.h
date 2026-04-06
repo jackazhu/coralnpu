@@ -15,6 +15,8 @@
 #ifndef SW_OPT_LITERT_MICRO_CONV_H_
 #define SW_OPT_LITERT_MICRO_CONV_H_
 
+#include <stdint.h>
+
 #include "sw/opt/litert-micro/memory_util.h"
 #include "tensorflow/lite/micro/kernels/conv.h"
 
@@ -30,6 +32,11 @@ void ConvPerChannel(
     int8_t* output_data);
 
 TFLMRegistration Register_CONV_2D();
+
+// Runtime counters for optimized Conv2D registration usage/fallback behavior.
+void ResetConv2dEvalCounters();
+uint32_t GetConv2dEvalCount();
+uint32_t GetConv2dFallbackCount();
 
 void RepackWeightsD48(const int8_t* __restrict src, int16_t* __restrict dst,
                       int32_t* __restrict weight_sums, int output_depth,

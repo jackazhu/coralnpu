@@ -188,6 +188,14 @@ def run_conv_sim_test():
         {"input": [1, 8, 8, 16], "filter": [48, 4, 4, 16], "stride": (1, 1)},
         # 5. Fallback (fh=3, fw=3)
         {"input": [1, 8, 8, 16], "filter": [16, 3, 3, 16], "stride": (1, 1)},
+        # 6. Conv2D_1x1
+        {"input": [1, 12, 12, 32], "filter": [64, 1, 1, 32], "stride": (1, 1)},
+        {"input": [1, 11, 11, 64], "filter": [32, 1, 1, 64], "stride": (2, 2)},
+        # 7. Conv2D_3x3
+        {"input": [1, 12, 12, 32], "filter": [32, 3, 3, 32], "stride": (1, 1)},
+        {"input": [1, 11, 11, 16], "filter": [24, 3, 3, 16], "stride": (2, 2)},
+        # 8. Conv2D_5x5 grouped-conv path (e.g. BCResNet-style groups)
+        {"input": [1, 12, 12, 40], "filter": [40, 5, 5, 2], "stride": (1, 1)},
     ]
 
     for tc in test_cases:

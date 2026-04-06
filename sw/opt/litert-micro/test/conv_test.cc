@@ -139,7 +139,8 @@ __attribute__((used, retain)) void run_optimized() {
         &context, output_depth * sizeof(int32_t));
     RepackWeightsD48(filter_data, data.repacked_weights, data.weight_sums,
                      output_depth, filter_height, filter_width, input_depth);
-  } else if (filter_height == 4 && filter_width == 4) {
+  } else if ((filter_height == 4 && filter_width == 4) ||
+             (filter_height == 1 && filter_width == 1)) {
     size_t repacked_size =
         output_depth * filter_height * filter_width * input_depth;
     data.repacked_weights_generic =
