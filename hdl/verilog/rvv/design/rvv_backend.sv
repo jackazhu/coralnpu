@@ -995,64 +995,33 @@ module rvv_backend
 `ifdef ARBITER_ON
     generate
       for(i=`NUM_LSU;i<`NUM_PU;i++) begin : gen_res_ff
-        if ((i >= (`NUM_LSU + `NUM_ALU)) && (i < (`NUM_LSU + `NUM_ALU + `NUM_MUL))) begin : gen_mul_res_ff
-          // Give mul/mac lanes deeper buffering to absorb arbiter contention bursts.
-          multi_fifo #(
-              .T            (PU2ROB_t),
-              .M            (1),
-              .N            (1),
-              .ASYNC_RSTN   (1'b1),
-              .DEPTH        (4)
-          ) u_res_ff (
-            // global
-              .clk          (clk),
-              .rst_n        (rst_n),
-            // write
-              .push         (res_valid_pu2arb[i] & res_ready_arb2pu[i]),
-              .datain       (res_pu2arb[i]),
-            // read
-              .pop          (grant_arb[i]),
-              .dataout      (item_ari[i]),
-            // fifo status
-              .full         (res_ff_full[i]),
-              .almost_full  (),
-              .empty        (res_ff_empty[i]),
-              .almost_empty (),
-              .clear        (trap_flush_rvv),
-              .fifo_data    (),
-              .wptr         (),
-              .rptr         (),
-              .entry_count  ()
-          );
-        end else begin : gen_default_res_ff
-          multi_fifo #(
-              .T            (PU2ROB_t),
-              .M            (1),
-              .N            (1),
-              .ASYNC_RSTN   (1'b1),
-              .DEPTH        (2)
-          ) u_res_ff (
-            // global
-              .clk          (clk),
-              .rst_n        (rst_n),
-            // write
-              .push         (res_valid_pu2arb[i] & res_ready_arb2pu[i]),
-              .datain       (res_pu2arb[i]),
-            // read
-              .pop          (grant_arb[i]),
-              .dataout      (item_ari[i]),
-            // fifo status
-              .full         (res_ff_full[i]),
-              .almost_full  (),
-              .empty        (res_ff_empty[i]),
-              .almost_empty (),
-              .clear        (trap_flush_rvv),
-              .fifo_data    (),
-              .wptr         (),
-              .rptr         (),
-              .entry_count  ()
-          );
-        end
+        multi_fifo #(
+            .T            (PU2ROB_t),
+            .M            (1),
+            .N            (1),
+            .ASYNC_RSTN   (1'b1),
+            .DEPTH        (2)
+        ) u_res_ff (
+          // global
+            .clk          (clk),
+            .rst_n        (rst_n),
+          // write
+            .push         (res_valid_pu2arb[i] & res_ready_arb2pu[i]),
+            .datain       (res_pu2arb[i]),
+          // read
+            .pop          (grant_arb[i]),
+            .dataout      (item_ari[i]),
+          // fifo status
+            .full         (res_ff_full[i]),
+            .almost_full  (),
+            .empty        (res_ff_empty[i]),
+            .almost_empty (),
+            .clear        (trap_flush_rvv),
+            .fifo_data    (),
+            .wptr         (),
+            .rptr         (),
+            .entry_count  ()
+        );
 
         assign res_ready_arb2pu[i] = !res_ff_full[i]; 
         assign req_ari[i]          = !res_ff_empty[i];
