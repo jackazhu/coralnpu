@@ -1530,20 +1530,6 @@ void Conv2D_5x5(const tflite::ConvParams& params,
       if (bias_data != nullptr) {
         bias_v = __riscv_vle32_v_i32m4(bias_data + out_channel_start, vl);
       }
-      vint32m4_t mult_v = __riscv_vle32_v_i32m4(
-          data.per_channel_output_multiplier + out_channel_start, vl);
-      vint32m4_t shift_v = __riscv_vle32_v_i32m4(
-          data.per_channel_output_shift + out_channel_start, vl);
-
-      vint32m4_t left_shift_v = __riscv_vmax_vx_i32m4(shift_v, 0, vl);
-      vint32m4_t right_shift_v =
-          __riscv_vmax_vx_i32m4(__riscv_vneg_v_i32m4(shift_v, vl), 0, vl);
-      vint32m4_t shift_minus_1_v = __riscv_vsub_vx_i32m4(right_shift_v, 1, vl);
-      vbool8_t mask_gt0 = __riscv_vmsgt_vx_i32m4_b8(right_shift_v, 0, vl);
-      vint32m4_t nudge_v = __riscv_vmv_v_x_i32m4(0, vl);
-      nudge_v = __riscv_vsll_vv_i32m4_mu(
-          mask_gt0, nudge_v, __riscv_vmv_v_x_i32m4(1, vl),
-          __riscv_vreinterpret_v_i32m4_u32m4(shift_minus_1_v), vl);
 
       for (int batch = 0; batch < batches; ++batch) {
         const int8_t* batch_base =
@@ -1578,24 +1564,24 @@ void Conv2D_5x5(const tflite::ConvParams& params,
               }
             }
 
-            acc = __riscv_vsll_vv_i32m4(
-                acc, __riscv_vreinterpret_v_i32m4_u32m4(left_shift_v), vl);
-            acc = __riscv_vsmul_vv_i32m4(acc, mult_v, 0, vl);
-            acc = __riscv_vadd_vv_i32m4(acc, nudge_v, vl);
-            acc = __riscv_vsra_vv_i32m4(
-                acc, __riscv_vreinterpret_v_i32m4_u32m4(right_shift_v), vl);
-            acc = __riscv_vadd_vx_i32m4(acc, output_offset, vl);
-            acc = __riscv_vmax_vx_i32m4(acc, data.output_activation_min, vl);
-            acc = __riscv_vmin_vx_i32m4(acc, data.output_activation_max, vl);
-            vint16m2_t a16 = __riscv_vnclip_wx_i16m2(acc, 0, 0, vl);
-            vint8m1_t a8 = __riscv_vnclip_wx_i8m1(a16, 0, 0, vl);
-
             int8_t* out_ptr =
                 output_data +
                 (batch * output_height * output_width * output_depth) +
                 (out_y * output_width * output_depth) + (out_x * output_depth) +
                 out_channel_start;
-            __riscv_vse8_v_i8m1(out_ptr, a8, vl);
+            int32_t acc_buf[32];
+            TFLITE_DCHECK_LE(vl, 32);
+            __riscv_vse32_v_i32m4(acc_buf, acc, vl);
+            for (size_t lane = 0; lane < vl; ++lane) {
+              const int out_channel = out_channel_start + lane;
+              int32_t q = tflite::MultiplyByQuantizedMultiplier(
+                  acc_buf[lane], data.per_channel_output_multiplier[out_channel],
+                  data.per_channel_output_shift[out_channel]);
+              q += output_offset;
+              q = std::max(q, data.output_activation_min);
+              q = std::min(q, data.output_activation_max);
+              out_ptr[lane] = static_cast<int8_t>(q);
+            }
           }
         }
       }
