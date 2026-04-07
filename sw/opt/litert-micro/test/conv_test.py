@@ -186,6 +186,10 @@ def run_conv_sim_test():
         # 4. Conv2D_4x4 (Generic 4x4)
         {"input": [1, 8, 8, 32], "filter": [32, 4, 4, 32], "stride": (1, 1)},
         {"input": [1, 8, 8, 16], "filter": [48, 4, 4, 16], "stride": (1, 1)},
+        # 5x5 specialized path
+        {"input": [1, 12, 12, 40], "filter": [40, 5, 5, 40], "stride": (1, 1)},
+        # 5x5 grouped path (groups=40, filter_input_depth=1)
+        {"input": [1, 12, 12, 40], "filter": [40, 5, 5, 1], "stride": (1, 1)},
         # 5. Fallback (fh=3, fw=3)
         {"input": [1, 8, 8, 16], "filter": [16, 3, 3, 16], "stride": (1, 1)},
     ]

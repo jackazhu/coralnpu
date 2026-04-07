@@ -984,7 +984,6 @@ void Conv_1x1_PerChannel(const ConvParams& params,
   const int pad_width = params.padding_values.width;
   const int pad_height = params.padding_values.height;
   const int32_t input_offset = params.input_offset;
-  const int32_t filter_offset = params.weights_offset;
   const int32_t output_offset = params.output_offset;
   const int32_t output_activation_min = params.quantized_activation_min;
   const int32_t output_activation_max = params.quantized_activation_max;
@@ -1024,10 +1023,9 @@ void Conv_1x1_PerChannel(const ConvParams& params,
                 &filter_data[(out_c + 1) * input_depth + d], vl);
             vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
                 __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
-            vint16m2_t w0_v16 = __riscv_vadd_vx_i16m2(
-                __riscv_vsext_vf2_i16m2(w0_v8, vl), filter_offset, vl);
-            vint16m2_t w1_v16 = __riscv_vadd_vx_i16m2(
-                __riscv_vsext_vf2_i16m2(w1_v8, vl), filter_offset, vl);
+            // Int8 per-channel conv uses symmetric weights (zero-point = 0).
+            vint16m2_t w0_v16 = __riscv_vwadd_vx_i16m2(w0_v8, 0, vl);
+            vint16m2_t w1_v16 = __riscv_vwadd_vx_i16m2(w1_v8, 0, vl);
             acc0_v = __riscv_vwmacc_vv_i32m4(acc0_v, in_v16, w0_v16, vl);
             acc1_v = __riscv_vwmacc_vv_i32m4(acc1_v, in_v16, w1_v16, vl);
             d += vl;
@@ -1060,11 +1058,246 @@ void Conv_1x1_PerChannel(const ConvParams& params,
                 __riscv_vle8_v_i8m1(&filter_data[out_c * input_depth + d], vl);
             vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
                 __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
-            vint16m2_t w_v16 = __riscv_vadd_vx_i16m2(
-                __riscv_vsext_vf2_i16m2(w_v8, vl), filter_offset, vl);
+            vint16m2_t w_v16 = __riscv_vwadd_vx_i16m2(w_v8, 0, vl);
             acc_v = __riscv_vwmacc_vv_i32m4(acc_v, in_v16, w_v16, vl);
             d += vl;
             d_rem -= vl;
+          }
+          const int32_t acc = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc_v, zero_v, acc_vlmax));
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c)] =
+              QuantizeAndClampConvAcc(
+                  acc, bias_data ? bias_data[out_c] : 0,
+                  output_multiplier[out_c], output_shift[out_c], output_offset,
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
+
+void Conv_1x1_PerChannel_Grouped(const ConvParams& params,
+                                 const int32_t* output_multiplier,
+                                 const int32_t* output_shift,
+                                 const RuntimeShape& input_shape,
+                                 const int8_t* input_data,
+                                 const RuntimeShape& filter_shape,
+                                 const int8_t* filter_data,
+                                 const int32_t* bias_data,
+                                 const RuntimeShape& output_shape,
+                                 int8_t* output_data, int filters_per_group) {
+  const int batches = input_shape.Dims(0);
+  const int input_height = input_shape.Dims(1);
+  const int input_width = input_shape.Dims(2);
+  const int filter_input_depth = filter_shape.Dims(3);
+  const int output_height = output_shape.Dims(1);
+  const int output_width = output_shape.Dims(2);
+  const int output_depth = output_shape.Dims(3);
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int pad_width = params.padding_values.width;
+  const int pad_height = params.padding_values.height;
+  const int32_t input_offset = params.input_offset;
+  const int32_t output_offset = params.output_offset;
+  const int32_t output_activation_min = params.quantized_activation_min;
+  const int32_t output_activation_max = params.quantized_activation_max;
+
+  const size_t acc_vlmax = __riscv_vsetvlmax_e32m4();
+  const vint32m1_t zero_v = __riscv_vmv_v_x_i32m1(0, 1);
+
+  for (int batch = 0; batch < batches; ++batch) {
+    for (int out_y = 0; out_y < output_height; ++out_y) {
+      const int in_y = out_y * stride_height - pad_height;
+      if (in_y < 0 || in_y >= input_height) {
+        continue;
+      }
+      for (int out_x = 0; out_x < output_width; ++out_x) {
+        const int in_x = out_x * stride_width - pad_width;
+        if (in_x < 0 || in_x >= input_width) {
+          continue;
+        }
+        for (int out_c = 0; out_c < output_depth; ++out_c) {
+          const int group = out_c / filters_per_group;
+          const int in_ch_base = group * filter_input_depth;
+          const int8_t* input_ptr =
+              input_data + Offset(input_shape, batch,
+                                  in_y + 0 * dilation_height_factor,
+                                  in_x + 0 * dilation_width_factor, in_ch_base);
+          vint32m4_t acc_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          int d = 0;
+          int d_rem = filter_input_depth;
+          while (d_rem > 0) {
+            size_t vl = __riscv_vsetvl_e8m1(d_rem);
+            vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&input_ptr[d], vl);
+            vint8m1_t w_v8 =
+                __riscv_vle8_v_i8m1(&filter_data[out_c * filter_input_depth + d],
+                                    vl);
+            vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+            vint16m2_t w_v16 = __riscv_vwadd_vx_i16m2(w_v8, 0, vl);
+            acc_v = __riscv_vwmacc_vv_i32m4(acc_v, in_v16, w_v16, vl);
+            d += vl;
+            d_rem -= vl;
+          }
+          const int32_t acc = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc_v, zero_v, acc_vlmax));
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c)] =
+              QuantizeAndClampConvAcc(
+                  acc, bias_data ? bias_data[out_c] : 0,
+                  output_multiplier[out_c], output_shift[out_c], output_offset,
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
+
+// Specialized 5x5 Conv for per-channel int8 conv (including grouped).
+// It keeps fallback semantics while accelerating the heavy 5x5 kernels that are
+// still routed to reference implementation in network paths.
+void Conv_5x5_PerChannel(const ConvParams& params,
+                         const int32_t* output_multiplier,
+                         const int32_t* output_shift,
+                         const RuntimeShape& input_shape,
+                         const int8_t* input_data,
+                         const RuntimeShape& filter_shape,
+                         const int8_t* filter_data, const int32_t* bias_data,
+                         const RuntimeShape& output_shape, int8_t* output_data,
+                         int groups, int filters_per_group) {
+  const int batches = input_shape.Dims(0);
+  const int input_height = input_shape.Dims(1);
+  const int input_width = input_shape.Dims(2);
+  const int output_height = output_shape.Dims(1);
+  const int output_width = output_shape.Dims(2);
+  const int output_depth = output_shape.Dims(3);
+  const int filter_height = filter_shape.Dims(1);
+  const int filter_width = filter_shape.Dims(2);
+  const int filter_input_depth = filter_shape.Dims(3);
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int pad_width = params.padding_values.width;
+  const int pad_height = params.padding_values.height;
+  const int32_t input_offset = params.input_offset;
+  const int32_t output_offset = params.output_offset;
+  const int32_t output_activation_min = params.quantized_activation_min;
+  const int32_t output_activation_max = params.quantized_activation_max;
+
+  const int filter_stride = filter_height * filter_width * filter_input_depth;
+  const size_t acc_vlmax = __riscv_vsetvlmax_e32m4();
+  const vint32m1_t zero_v = __riscv_vmv_v_x_i32m1(0, 1);
+
+  for (int batch = 0; batch < batches; ++batch) {
+    for (int out_y = 0; out_y < output_height; ++out_y) {
+      const int in_y_origin = out_y * stride_height - pad_height;
+      for (int out_x = 0; out_x < output_width; ++out_x) {
+        const int in_x_origin = out_x * stride_width - pad_width;
+        int out_c = 0;
+
+        for (; out_c + 1 < output_depth; out_c += 2) {
+          vint32m4_t acc0_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          vint32m4_t acc1_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+
+          for (int ky = 0; ky < 5; ++ky) {
+            const int in_y = in_y_origin + dilation_height_factor * ky;
+            if (in_y < 0 || in_y >= input_height) {
+              continue;
+            }
+            for (int kx = 0; kx < 5; ++kx) {
+              const int in_x = in_x_origin + dilation_width_factor * kx;
+              if (in_x < 0 || in_x >= input_width) {
+                continue;
+              }
+              const int group0 = out_c / filters_per_group;
+              const int group1 = (out_c + 1) / filters_per_group;
+              if (group0 != group1) {
+                continue;
+              }
+              const int in_ch_base = group0 * filter_shape.Dims(3);
+              const int8_t* input_ptr =
+                  input_data + Offset(input_shape, batch, in_y, in_x, in_ch_base);
+              const int kernel_offset = ky * 5 * filter_input_depth +
+                                        kx * filter_input_depth;
+              const int8_t* filter_ptr0 =
+                  &filter_data[out_c * filter_stride + kernel_offset];
+              const int8_t* filter_ptr1 =
+                  &filter_data[(out_c + 1) * filter_stride + kernel_offset];
+
+              int d = 0;
+              int d_rem = filter_input_depth;
+              while (d_rem > 0) {
+                size_t vl = __riscv_vsetvl_e8m1(d_rem);
+                vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&input_ptr[d], vl);
+                vint8m1_t w0_v8 = __riscv_vle8_v_i8m1(&filter_ptr0[d], vl);
+                vint8m1_t w1_v8 = __riscv_vle8_v_i8m1(&filter_ptr1[d], vl);
+                vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                    __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+                // Int8 per-channel conv uses symmetric weights (zero-point = 0).
+                vint16m2_t w0_v16 = __riscv_vwadd_vx_i16m2(w0_v8, 0, vl);
+                vint16m2_t w1_v16 = __riscv_vwadd_vx_i16m2(w1_v8, 0, vl);
+                acc0_v = __riscv_vwmacc_vv_i32m4(acc0_v, in_v16, w0_v16, vl);
+                acc1_v = __riscv_vwmacc_vv_i32m4(acc1_v, in_v16, w1_v16, vl);
+                d += vl;
+                d_rem -= vl;
+              }
+            }
+          }
+
+          const int32_t acc0 = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc0_v, zero_v, acc_vlmax));
+          const int32_t acc1 = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc1_v, zero_v, acc_vlmax));
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c)] =
+              QuantizeAndClampConvAcc(
+                  acc0, bias_data ? bias_data[out_c] : 0,
+                  output_multiplier[out_c], output_shift[out_c], output_offset,
+                  output_activation_min, output_activation_max);
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c + 1)] =
+              QuantizeAndClampConvAcc(
+                  acc1, bias_data ? bias_data[out_c + 1] : 0,
+                  output_multiplier[out_c + 1], output_shift[out_c + 1],
+                  output_offset, output_activation_min, output_activation_max);
+        }
+
+        for (; out_c < output_depth; ++out_c) {
+          vint32m4_t acc_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          for (int ky = 0; ky < 5; ++ky) {
+            const int in_y = in_y_origin + dilation_height_factor * ky;
+            if (in_y < 0 || in_y >= input_height) {
+              continue;
+            }
+            for (int kx = 0; kx < 5; ++kx) {
+              const int in_x = in_x_origin + dilation_width_factor * kx;
+              if (in_x < 0 || in_x >= input_width) {
+                continue;
+              }
+              const int group = out_c / filters_per_group;
+              const int in_ch_base = group * filter_input_depth;
+              const int8_t* input_ptr =
+                  input_data + Offset(input_shape, batch, in_y, in_x, in_ch_base);
+              const int kernel_offset = ky * 5 * filter_input_depth +
+                                        kx * filter_input_depth;
+              const int8_t* filter_ptr =
+                  &filter_data[out_c * filter_stride + kernel_offset];
+              int d = 0;
+              int d_rem = filter_input_depth;
+              while (d_rem > 0) {
+                size_t vl = __riscv_vsetvl_e8m1(d_rem);
+                vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&input_ptr[d], vl);
+                vint8m1_t w_v8 = __riscv_vle8_v_i8m1(&filter_ptr[d], vl);
+                vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                    __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+                vint16m2_t w_v16 = __riscv_vwadd_vx_i16m2(w_v8, 0, vl);
+                acc_v = __riscv_vwmacc_vv_i32m4(acc_v, in_v16, w_v16, vl);
+                d += vl;
+                d_rem -= vl;
+              }
+            }
           }
           const int32_t acc = __riscv_vmv_x_s_i32m1_i32(
               __riscv_vredsum_vs_i32m4_i32m1(acc_v, zero_v, acc_vlmax));
@@ -1459,9 +1692,22 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
                output_data, data.repacked_weights_generic, context);
   } else if (filter_height == 1 && filter_width == 1) {
-    Conv_1x1_PerChannel(params, output_multiplier, output_shift, input_shape,
+    if (groups == 1) {
+      Conv_1x1_PerChannel(params, output_multiplier, output_shift, input_shape,
+                          input_data, filter_shape, filter_data_copy.get(),
+                          bias_data_copy.get(), output_shape, output_data);
+    } else {
+      Conv_1x1_PerChannel_Grouped(
+          params, output_multiplier, output_shift, input_shape, input_data,
+          filter_shape, filter_data_copy.get(), bias_data_copy.get(),
+          output_shape, output_data, filters_per_group);
+    }
+  } else if (filter_height == 5 && filter_width == 5 &&
+             filter_input_depth == input_depth) {
+    Conv_5x5_PerChannel(params, output_multiplier, output_shift, input_shape,
                         input_data, filter_shape, filter_data_copy.get(),
-                        bias_data_copy.get(), output_shape, output_data);
+                        bias_data_copy.get(), output_shape, output_data, groups,
+                        filters_per_group);
   } else {
     MicroPrintf("Fallback kernel: fh=%d fw=%d id=%d od=%d", filter_height,
                 filter_width, input_depth, output_depth);
