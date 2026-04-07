@@ -166,7 +166,8 @@ always@(*) begin
     {1'b1,OPMVV} : begin
       is_vv = 1'b1;
       case (mac_uop_funct6) 
-        VMACC : begin
+        VMACC,
+        VCUSTOMGEMM : begin
           mac_src2           = mac_uop_vs2_data;
           mac_src1           = mac_uop_vs1_data;
           mac_addsrc         = mac_uop_vs3_data;
@@ -351,7 +352,8 @@ always@(*) begin
     {1'b1,OPMVX} : begin
       is_vv = 1'b0;
       case (mac_uop_funct6) 
-        VMACC : begin
+        VMACC,
+        VCUSTOMGEMM : begin
           mac_src2           = mac_uop_vs2_data;
           mac_src1           = {(`VLEN-`XLEN)'('b0),mac_uop_rs1_data}; //use rs1
           mac_addsrc         = mac_uop_vs3_data;

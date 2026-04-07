@@ -339,6 +339,7 @@ module rvv_backend_decode_unit_ari_de2
           end
           
           VMACC,
+          VCUSTOMGEMM,
           VNMSAC,
           VMADD,
           VNMSUB,
@@ -616,6 +617,7 @@ module rvv_backend_decode_unit_ari_de2
             end
 
             VMACC,
+            VCUSTOMGEMM,
             VNMSAC,
             VMADD,
             VNMSUB,
@@ -1162,6 +1164,7 @@ module rvv_backend_decode_unit_ari_de2
             VWMULSU,
             VWMACCUS,
             VMACC,
+            VCUSTOMGEMM,
             VNMSAC,
             VMADD,
             VNMSUB,
@@ -1360,6 +1363,7 @@ module rvv_backend_decode_unit_ari_de2
               vs3_valid[i] = (csr_vstart!='b0);
             end
             VMACC,
+            VCUSTOMGEMM,
             VNMSAC,
             VMADD,
             VNMSUB,
@@ -1523,6 +1527,7 @@ module rvv_backend_decode_unit_ari_de2
             VREMU,
             VREM,
             VMACC,
+            VCUSTOMGEMM,
             VNMSAC,
             VMADD,
             VNMSUB,
@@ -1720,6 +1725,7 @@ module rvv_backend_decode_unit_ari_de2
             VREMU,
             VREM,
             VMACC,
+            VCUSTOMGEMM,
             VNMSAC,
             VMADD,
             VNMSUB,
@@ -2039,6 +2045,7 @@ module rvv_backend_decode_unit_ari_de2
           VWMULU,
           VWMULSU,
           VMACC,
+          VCUSTOMGEMM,
           VNMSAC,
           VMADD,
           VNMSUB,
