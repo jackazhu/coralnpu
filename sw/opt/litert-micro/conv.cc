@@ -1395,6 +1395,94 @@ void Conv_5x5_GroupedDepthwiseEquivalent(
   }
 }
 
+// Specialized grouped 5x5 path for common grouped pattern:
+// filter_input_depth == 2 and filters_per_group == 2.
+// This removes tiny-vector setup/reduction overhead and directly computes two
+// outputs per group.
+void Conv_5x5_Grouped2x2_PerChannel(const ConvParams& params,
+                                    const int32_t* output_multiplier,
+                                    const int32_t* output_shift,
+                                    const RuntimeShape& input_shape,
+                                    const int8_t* input_data,
+                                    const RuntimeShape& filter_shape,
+                                    const int8_t* filter_data,
+                                    const int32_t* bias_data,
+                                    const RuntimeShape& output_shape,
+                                    int8_t* output_data, int groups) {
+  const int batches = input_shape.Dims(0);
+  const int input_height = input_shape.Dims(1);
+  const int input_width = input_shape.Dims(2);
+  const int output_height = output_shape.Dims(1);
+  const int output_width = output_shape.Dims(2);
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int pad_width = params.padding_values.width;
+  const int pad_height = params.padding_values.height;
+  const int32_t input_offset = params.input_offset;
+  const int32_t output_offset = params.output_offset;
+  const int32_t output_activation_min = params.quantized_activation_min;
+  const int32_t output_activation_max = params.quantized_activation_max;
+
+  constexpr int kFilterInputDepth = 2;
+  constexpr int kFiltersPerGroup = 2;
+  constexpr int kFilterStride = 5 * 5 * kFilterInputDepth;
+
+  for (int batch = 0; batch < batches; ++batch) {
+    for (int out_y = 0; out_y < output_height; ++out_y) {
+      const int in_y_origin = out_y * stride_height - pad_height;
+      for (int out_x = 0; out_x < output_width; ++out_x) {
+        const int in_x_origin = out_x * stride_width - pad_width;
+        for (int g = 0; g < groups; ++g) {
+          const int in_ch_base = g * kFilterInputDepth;
+          const int out_c0 = g * kFiltersPerGroup;
+          const int out_c1 = out_c0 + 1;
+          int32_t acc0 = 0;
+          int32_t acc1 = 0;
+
+          for (int ky = 0; ky < 5; ++ky) {
+            const int in_y = in_y_origin + dilation_height_factor * ky;
+            if (in_y < 0 || in_y >= input_height) {
+              continue;
+            }
+            for (int kx = 0; kx < 5; ++kx) {
+              const int in_x = in_x_origin + dilation_width_factor * kx;
+              if (in_x < 0 || in_x >= input_width) {
+                continue;
+              }
+              const int8_t* in_ptr =
+                  input_data + Offset(input_shape, batch, in_y, in_x, in_ch_base);
+              const int kernel_offset = (ky * 5 + kx) * kFilterInputDepth;
+              const int8_t* w0 = &filter_data[out_c0 * kFilterStride + kernel_offset];
+              const int8_t* w1 = &filter_data[out_c1 * kFilterStride + kernel_offset];
+
+              const int32_t in0 = static_cast<int32_t>(in_ptr[0]) + input_offset;
+              const int32_t in1 = static_cast<int32_t>(in_ptr[1]) + input_offset;
+              acc0 += in0 * static_cast<int32_t>(w0[0]) +
+                      in1 * static_cast<int32_t>(w0[1]);
+              acc1 += in0 * static_cast<int32_t>(w1[0]) +
+                      in1 * static_cast<int32_t>(w1[1]);
+            }
+          }
+
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c0)] =
+              QuantizeAndClampConvAcc(
+                  acc0, bias_data ? bias_data[out_c0] : 0,
+                  output_multiplier[out_c0], output_shift[out_c0], output_offset,
+                  output_activation_min, output_activation_max);
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c1)] =
+              QuantizeAndClampConvAcc(
+                  acc1, bias_data ? bias_data[out_c1] : 0,
+                  output_multiplier[out_c1], output_shift[out_c1], output_offset,
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
+
 #undef CONV_MAC
 
 void RepackWeightsD48(const int8_t* __restrict src, int16_t* __restrict dst,
@@ -1796,14 +1884,22 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
         input_shape, input_data, filter_shape, filter_data_copy.get(),
         bias_data_copy.get(), output_shape, output_data, accs_buf);
   } else if (filter_height == 5 && filter_width == 5 &&
+             filter_input_depth == 2 && filters_per_group == 2) {
+    Conv_5x5_Grouped2x2_PerChannel(
+        params, output_multiplier, output_shift, input_shape, input_data,
+        filter_shape, filter_data_copy.get(), bias_data_copy.get(), output_shape,
+        output_data, groups);
+  } else if (filter_height == 5 && filter_width == 5 &&
              filter_input_depth == input_depth) {
     Conv_5x5_PerChannel(params, output_multiplier, output_shift, input_shape,
                         input_data, filter_shape, filter_data_copy.get(),
                         bias_data_copy.get(), output_shape, output_data, groups,
                         filters_per_group);
   } else {
-    MicroPrintf("Fallback kernel: fh=%d fw=%d id=%d od=%d", filter_height,
-                filter_width, input_depth, output_depth);
+    MicroPrintf(
+        "Fallback kernel: fh=%d fw=%d id=%d od=%d fid=%d groups=%d fpg=%d",
+        filter_height, filter_width, input_depth, output_depth,
+        filter_input_depth, groups, filters_per_group);
     tflite::reference_integer_ops::ConvPerChannel(
         params, output_multiplier, output_shift, input_shape, input_data,
         filter_shape, filter_data, bias_shape, bias_data, output_shape,
