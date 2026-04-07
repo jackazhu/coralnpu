@@ -58,6 +58,7 @@ cc_library(
     target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
     deps = [
         ":accumulator_util",
+        ":depthwise_conv",
         ":memory_util",
         "//sw/opt:rvv_opt",
         "@tflite_micro//tensorflow/lite/kernels/internal:common",
