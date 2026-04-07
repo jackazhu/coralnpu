@@ -22,7 +22,6 @@
 
 #include "sw/opt/litert-micro/accumulator_util.h"
 #include "sw/opt/litert-micro/memory_util.h"
-#include "sw/opt/litert-micro/depthwise_conv.h"
 #include "sw/opt/rvv_opt.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/conv.h"
@@ -1313,68 +1312,6 @@ void Conv_5x5_PerChannel(const ConvParams& params,
   }
 }
 
-bool TryDepthwiseEquivalent5x5Conv(
-    const ConvParams& params, const OpDataConvCustom& data,
-    const int32_t* output_multiplier, const int32_t* output_shift,
-    TfLiteContext* context, const RuntimeShape& input_shape,
-    const int8_t* input_data, const RuntimeShape& filter_shape,
-    const int8_t* filter_data, const RuntimeShape& bias_shape,
-    const int32_t* bias_data, const RuntimeShape& output_shape,
-    int8_t* output_data, int input_depth, int output_depth, int groups,
-    int filters_per_group, int filter_input_depth) {
-  if (!(groups == input_depth && filters_per_group == 1 &&
-        filter_input_depth == 1)) {
-    return false;
-  }
-  int32_t* accs_buf = static_cast<int32_t*>(
-      context->GetScratchBuffer(context, data.accs_buffer_index));
-  if (accs_buf == nullptr) {
-    return false;
-  }
-
-  const int filter_height = filter_shape.Dims(1);
-  const int filter_width = filter_shape.Dims(2);
-  auto depthwise_filter = make_aligned_array<int8_t>(
-      16, filter_height * filter_width * output_depth);
-  if (depthwise_filter == nullptr) {
-    return false;
-  }
-
-  for (int ky = 0; ky < filter_height; ++ky) {
-    for (int kx = 0; kx < filter_width; ++kx) {
-      const int dst_base = (ky * filter_width + kx) * output_depth;
-      for (int oc = 0; oc < output_depth; ++oc) {
-        const int src_idx =
-            ((oc * filter_height + ky) * filter_width + kx) * filter_input_depth;
-        depthwise_filter[dst_base + oc] = filter_data[src_idx];
-      }
-    }
-  }
-
-  int32_t depthwise_filter_dims[4] = {1, filter_height, filter_width,
-                                      output_depth};
-  const RuntimeShape depthwise_filter_shape(4, depthwise_filter_dims);
-
-  tflite::DepthwiseParams depthwise_params;
-  depthwise_params.padding_values = params.padding_values;
-  depthwise_params.stride_width = params.stride_width;
-  depthwise_params.stride_height = params.stride_height;
-  depthwise_params.dilation_width_factor = params.dilation_width_factor;
-  depthwise_params.dilation_height_factor = params.dilation_height_factor;
-  depthwise_params.depth_multiplier = 1;
-  depthwise_params.input_offset = params.input_offset;
-  depthwise_params.weights_offset = params.weights_offset;
-  depthwise_params.output_offset = params.output_offset;
-  depthwise_params.quantized_activation_min = params.quantized_activation_min;
-  depthwise_params.quantized_activation_max = params.quantized_activation_max;
-
-  DepthwiseConvPerChannel(
-      depthwise_params, output_multiplier, output_shift, input_shape, input_data,
-      depthwise_filter_shape, depthwise_filter.get(), bias_shape, bias_data,
-      output_shape, output_data, accs_buf);
-  return true;
-}
-
 #undef CONV_MAC
 
 void RepackWeightsD48(const int8_t* __restrict src, int16_t* __restrict dst,
@@ -1765,13 +1702,6 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
           filter_shape, filter_data_copy.get(), bias_data_copy.get(),
           output_shape, output_data, filters_per_group);
     }
-  } else if (filter_height == 5 && filter_width == 5 &&
-             TryDepthwiseEquivalent5x5Conv(
-                 params, data, output_multiplier, output_shift, context,
-                 input_shape, input_data, filter_shape, filter_data_copy.get(),
-                 bias_shape, bias_data_copy.get(), output_shape, output_data,
-                 input_depth, output_depth, groups, filters_per_group,
-                 filter_input_depth)) {
   } else if (filter_height == 5 && filter_width == 5 &&
              filter_input_depth == input_depth) {
     Conv_5x5_PerChannel(params, output_multiplier, output_shift, input_shape,
