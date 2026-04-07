@@ -268,6 +268,30 @@
 - 是否满足 C 完成条件：`No`
 - 若 No，阻塞原因：C 阶段已获得 FC 路径软件收益并保持系统回归稳定，但仍缺少 mpact/simulator/toolchain 助记符级支持与 custom GEMM 指令真实语义执行闭环。
 
+### C-Entry-004
+- 日期：2026-04-06
+- Git commit：`25e1e5c`
+- 改动摘要（含 decode/mpact/toolchain）：针对网络级瓶颈继续优化 `ConvPerChannel`：新增 `1x1` 专用 RVV kernel（`Conv_1x1_PerChannel`），将大量 `fh=1 fw=1` fallback 路径替换为向量化输入深度点积+逐通道量化实现；保持原有 4x4/其他分支不变。
+- fallback 验证方式：仅在 `filter_height==1 && filter_width==1` 时命中新分支，其他卷积形状仍维持原分发与 fallback 行为。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| Conv 算子正确性回归 | `bazel test --cache_test_results=no --test_output=streamed //sw/opt/litert-micro/test:conv_sim_test` | PASS | 所有既有 case 输出匹配参考实现 |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=206944458` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=285871598` |
+
+#### Benchmark 对照（C-Entry-004 vs C-Entry-003）
+| Workload | Metric | Before(C-003) | After(C-004) | Delta | 结论 |
+|---|---|---|---|---|---|
+| npusim_mobilenet | cycles | 516177367 | 206944458 | -59.91% | 显著改善（1x1 conv 主要瓶颈被命中） |
+| npusim_bcresnet | cycles | 327413977 | 285871598 | -12.69% | 明显改善（仍受 5x5 conv fallback 影响） |
+
+#### 阶段结论
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：网络级性能已从“持平”转为“显著改善”，但 C 阶段仍需继续完成 depthwise/5x5 等剩余热点覆盖与 custom GEMM 真实语义闭环。
+
 ## 5. 决策与问题跟踪
 
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
@@ -283,5 +307,6 @@
 | C-001 | 2026-04-06 | Action | 启动 C 阶段：新增 `custom_gemm` 模块并在 `fully_connected` 接入 custom-path + fallback 骨架，默认配置下确认 fallback 回归通过且不退化 | C | Done |
 | C-002 | 2026-04-06 | Action | 打通 C2 最小 custom 指令链路：新增 `VCUSTOMGEMM` 编码并接入 RVV decode/mac 占位执行；软件补充固定编码探针（`.word 0xBA002057`），默认配置保持 fallback 与性能不变 | C | Done |
 | C-003 | 2026-04-06 | Action | FC 热路径升级为 4-way 并行累加（再 2-way/tail 收尾），`fc_64x64 opt_cycles 12782 -> 11156`，且 npusim mobilenet/bcresnet 周期与功能保持稳定 | C | Done |
+| C-004 | 2026-04-06 | Action | 新增 `1x1` 专用 RVV Conv 内核并接入 `ConvPerChannel` 分发，网络级周期显著下降：mobilenet `-59.91%`、bcresnet `-12.69%`，功能回归通过 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
