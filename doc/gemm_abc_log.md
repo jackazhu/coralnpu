@@ -333,5 +333,6 @@
 | C-003 | 2026-04-06 | Action | FC 热路径升级为 4-way 并行累加（再 2-way/tail 收尾），`fc_64x64 opt_cycles 12782 -> 11156`，且 npusim mobilenet/bcresnet 周期与功能保持稳定 | C | Done |
 | C-004 | 2026-04-06 | Action | 新增 `1x1` 专用 RVV Conv 内核并接入 `ConvPerChannel` 分发，网络级周期显著下降：mobilenet `-59.91%`、bcresnet `-12.69%`，功能回归通过 | C | Done |
 | C-005 | 2026-04-06 | Action | 继续优化并收敛：补齐 `1x1 grouped conv` 专用路径（`groups>1`）且保持 `groups==1` 快路径不退化；`5x5` 专用原型保留但暂不放开到 grouped 场景（网络实测无正收益）；当前端到端周期稳定为 mobilenet `207447949`、bcresnet `285472441`。 | C | Done |
+| C-006 | 2026-04-07 | Action | 继续优化（多角度 + 资料检索后落地）：针对 bcresnet 实际热点 `fh=5 fw=5 id=40 od=40 fid=2 groups=20 fpg=2`，新增 `5x5 grouped(2x2)` 专用 RVV 路径 `Conv_5x5_Grouped2x2_PerChannel`，按输出通道向量化（`vle8 + vlse8 + vwmacc`）替换 reference fallback；保持其它分支不变。 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
