@@ -1713,8 +1713,8 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                 filter_width, input_depth, output_depth);
     tflite::reference_integer_ops::ConvPerChannel(
         params, output_multiplier, output_shift, input_shape, input_data,
-        filter_shape, filter_data, bias_shape, bias_data, output_shape,
-        output_data);
+        filter_shape, filter_data_copy.get(), bias_shape, bias_data_copy.get(),
+        output_shape, output_data);
   }
 }
 
