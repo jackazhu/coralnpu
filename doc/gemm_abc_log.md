@@ -241,6 +241,33 @@
 - 是否满足 C 完成条件：`No`
 - 若 No，阻塞原因：当前仅完成“编码+decode+执行占位”最小闭环；尚未完成 mpact/simulator/toolchain 的助记符级支持与真正 GEMM 指令语义执行。
 
+### C-Entry-003
+- 日期：2026-04-06
+- Git commit：`674ab94`
+- 改动摘要（含 decode/mpact/toolchain）：继续优化 A/C 共用的 FC 热路径：`fully_connected.cc` 从“双输出并行”升级为“优先四输出并行（4-way）+2-way+tail”分层策略，进一步复用输入向量加载并降低每输出通道开销；不改变 C2 custom 指令默认关闭/fallback 语义。
+- fallback 验证方式：`FullyConnectedEval` 的 custom GEMM 入口条件保持不变（编译开关与 capability 同时满足才尝试），默认配置下仍直接走 RVV 优化路径。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| FC 功能+性能 | `bazel test --cache_test_results=no --test_output=streamed //tests/cocotb/tutorial/tfmicro:cocotb_fully_connected` | PASS | `fc_64x64 opt_cycles=11156` |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=516177367` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=327413977` |
+
+#### Benchmark 对照（C-Entry-003 vs C-Entry-002）
+| Workload | Metric | Before(C-002) | After(C-003) | Delta | 结论 |
+|---|---|---|---|---|---|
+| fc_16x16 | opt_cycles | 2734 | 2500 | -8.56% | 改善 |
+| fc_64x64 | opt_cycles | 12782 | 11156 | -12.72% | 显著改善 |
+| fc_64x64 | speedup(ref/opt) | 7.07x | 8.10x | +1.03x | 显著改善 |
+| npusim_mobilenet | cycles | 516177367 | 516177367 | 0.00% | 持平 |
+| npusim_bcresnet | cycles | 327413977 | 327413977 | 0.00% | 持平 |
+
+#### 阶段结论
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：C 阶段已获得 FC 路径软件收益并保持系统回归稳定，但仍缺少 mpact/simulator/toolchain 助记符级支持与 custom GEMM 指令真实语义执行闭环。
+
 ## 5. 决策与问题跟踪
 
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
@@ -255,5 +282,6 @@
 | B-002 | 2026-04-06 | Action | B 第 3 轮尝试（arbiter fast path）在 `fc_64x64` 上 `opt_cycles 12839 -> 12854`，确认为负优化，已用 `git revert` 回退（`3c0e237`） | B | Done |
 | C-001 | 2026-04-06 | Action | 启动 C 阶段：新增 `custom_gemm` 模块并在 `fully_connected` 接入 custom-path + fallback 骨架，默认配置下确认 fallback 回归通过且不退化 | C | Done |
 | C-002 | 2026-04-06 | Action | 打通 C2 最小 custom 指令链路：新增 `VCUSTOMGEMM` 编码并接入 RVV decode/mac 占位执行；软件补充固定编码探针（`.word 0xBA002057`），默认配置保持 fallback 与性能不变 | C | Done |
+| C-003 | 2026-04-06 | Action | FC 热路径升级为 4-way 并行累加（再 2-way/tail 收尾），`fc_64x64 opt_cycles 12782 -> 11156`，且 npusim mobilenet/bcresnet 周期与功能保持稳定 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
