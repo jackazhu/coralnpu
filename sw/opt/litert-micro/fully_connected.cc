@@ -73,7 +73,74 @@ void FullyConnected(
 
   for (int b = 0; b < batches; ++b) {
     const int8_t* batch_input = &input_data[b * accum_depth];
+    int8_t* batch_output = &output_data[output_depth * b];
     int out_c = 0;
+
+    // Process four output channels together to maximize input vector reuse.
+    for (; out_c + 3 < output_depth; out_c += 4) {
+      int d = 0;
+      int d_rem = accum_depth;
+
+      vint32m4_t acc0_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+      vint32m4_t acc1_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+      vint32m4_t acc2_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+      vint32m4_t acc3_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+
+      while (d_rem > 0) {
+        size_t vl = __riscv_vsetvl_e8m1(d_rem);
+        vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&batch_input[d], vl);
+        vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+            __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+
+        vint8m1_t weight0_v8 =
+            __riscv_vle8_v_i8m1(&filter_data[out_c * accum_depth + d], vl);
+        vint8m1_t weight1_v8 =
+            __riscv_vle8_v_i8m1(&filter_data[(out_c + 1) * accum_depth + d], vl);
+        vint8m1_t weight2_v8 =
+            __riscv_vle8_v_i8m1(&filter_data[(out_c + 2) * accum_depth + d], vl);
+        vint8m1_t weight3_v8 =
+            __riscv_vle8_v_i8m1(&filter_data[(out_c + 3) * accum_depth + d], vl);
+
+        vint16m2_t weight0_v16 = __riscv_vadd_vx_i16m2(
+            __riscv_vsext_vf2_i16m2(weight0_v8, vl), filter_offset, vl);
+        vint16m2_t weight1_v16 = __riscv_vadd_vx_i16m2(
+            __riscv_vsext_vf2_i16m2(weight1_v8, vl), filter_offset, vl);
+        vint16m2_t weight2_v16 = __riscv_vadd_vx_i16m2(
+            __riscv_vsext_vf2_i16m2(weight2_v8, vl), filter_offset, vl);
+        vint16m2_t weight3_v16 = __riscv_vadd_vx_i16m2(
+            __riscv_vsext_vf2_i16m2(weight3_v8, vl), filter_offset, vl);
+
+        acc0_v = __riscv_vwmacc_vv_i32m4(acc0_v, in_v16, weight0_v16, vl);
+        acc1_v = __riscv_vwmacc_vv_i32m4(acc1_v, in_v16, weight1_v16, vl);
+        acc2_v = __riscv_vwmacc_vv_i32m4(acc2_v, in_v16, weight2_v16, vl);
+        acc3_v = __riscv_vwmacc_vv_i32m4(acc3_v, in_v16, weight3_v16, vl);
+
+        d += vl;
+        d_rem -= vl;
+      }
+
+      int32_t acc0 = __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc0_v, zero_v, acc_vlmax));
+      int32_t acc1 = __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc1_v, zero_v, acc_vlmax));
+      int32_t acc2 = __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc2_v, zero_v, acc_vlmax));
+      int32_t acc3 = __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc3_v, zero_v, acc_vlmax));
+
+      batch_output[out_c] = QuantizeAndClampAcc(
+          acc0, bias_data, out_c, output_multiplier, output_shift, output_offset,
+          output_activation_min, output_activation_max);
+      batch_output[out_c + 1] = QuantizeAndClampAcc(
+          acc1, bias_data, out_c + 1, output_multiplier, output_shift,
+          output_offset, output_activation_min, output_activation_max);
+      batch_output[out_c + 2] = QuantizeAndClampAcc(
+          acc2, bias_data, out_c + 2, output_multiplier, output_shift,
+          output_offset, output_activation_min, output_activation_max);
+      batch_output[out_c + 3] = QuantizeAndClampAcc(
+          acc3, bias_data, out_c + 3, output_multiplier, output_shift,
+          output_offset, output_activation_min, output_activation_max);
+    }
 
     // Process two output channels together to reuse input vector loads.
     for (; out_c + 1 < output_depth; out_c += 2) {
@@ -110,10 +177,10 @@ void FullyConnected(
       int32_t acc1 = __riscv_vmv_x_s_i32m1_i32(
           __riscv_vredsum_vs_i32m4_i32m1(acc1_v, zero_v, acc_vlmax));
 
-      output_data[out_c + output_depth * b] = QuantizeAndClampAcc(
+      batch_output[out_c] = QuantizeAndClampAcc(
           acc0, bias_data, out_c, output_multiplier, output_shift, output_offset,
           output_activation_min, output_activation_max);
-      output_data[out_c + 1 + output_depth * b] = QuantizeAndClampAcc(
+      batch_output[out_c + 1] = QuantizeAndClampAcc(
           acc1, bias_data, out_c + 1, output_multiplier, output_shift,
           output_offset, output_activation_min, output_activation_max);
     }
@@ -142,7 +209,7 @@ void FullyConnected(
 
       int32_t acc = __riscv_vmv_x_s_i32m1_i32(
           __riscv_vredsum_vs_i32m4_i32m1(acc_v, zero_v, acc_vlmax));
-      output_data[out_c + output_depth * b] = QuantizeAndClampAcc(
+      batch_output[out_c] = QuantizeAndClampAcc(
           acc, bias_data, out_c, output_multiplier, output_shift, output_offset,
           output_activation_min, output_activation_max);
     }
