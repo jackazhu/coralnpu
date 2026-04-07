@@ -55,8 +55,8 @@ inline int idiv_ceil(int x, int y) { return (x + y - 1) / y; }
 
 void DepthwiseConvPerChannelPatch(
     const DepthwiseParams& params, const int32_t* output_multiplier,
-    const uint8_t* shift_left, const uint8_t* shift_right,
-    const RuntimeShape& in_shape, const int8_t* in_data,
+    const int32_t* output_shift, const RuntimeShape& in_shape,
+    const int8_t* in_data,
     const RuntimeShape& f_shape, const int8_t* f_data,
     const RuntimeShape& bias_shape, const int32_t* bias_data,
     const RuntimeShape& out_shape, int8_t* out_data, int out_y_st, int out_y_ed,
@@ -142,9 +142,8 @@ void DepthwiseConvPerChannelPatch(
         }
       }
 
-      PostprocessAcc(accs, bias_data, shift_left, output_multiplier,
-                     shift_right, output_offset, output_activation_min,
-                     output_activation_max,
+      PostprocessAcc(accs, bias_data, output_multiplier, output_shift,
+                     output_offset, output_activation_min, output_activation_max,
                      &out_data[Offset(out_shape, batch, out_y, out_x_st, 0)],
                      /*out_w=*/out_x_ed - out_x_st, /*out_d=*/out_d);
     }
@@ -153,8 +152,8 @@ void DepthwiseConvPerChannelPatch(
 
 void DepthwiseConvPerChannelPatchCenter3x3Reuse6(
     const DepthwiseParams& params, const int32_t* output_multiplier,
-    const uint8_t* shift_left, const uint8_t* shift_right,
-    const RuntimeShape& in_shape, const int8_t* in_data,
+    const int32_t* output_shift, const RuntimeShape& in_shape,
+    const int8_t* in_data,
     const RuntimeShape& f_shape, const int8_t* f_data,
     const RuntimeShape& bias_shape, const int32_t* bias_data,
     const RuntimeShape& out_shape, int8_t* out_data, int out_y_st, int out_y_ed,
@@ -367,9 +366,8 @@ void DepthwiseConvPerChannelPatchCenter3x3Reuse6(
 
     for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
       PostprocessAcc(&accs[Offset(acc_shape, 0, out_y - out_y_st, 0, 0)],
-                     bias_data, shift_left, output_multiplier, shift_right,
-                     output_offset, output_activation_min,
-                     output_activation_max,
+                     bias_data, output_multiplier, output_shift, output_offset,
+                     output_activation_min, output_activation_max,
                      &out_data[Offset(out_shape, batch, out_y, out_x_st, 0)],
                      /*out_w=*/out_patch_w, /*out_d=*/out_d);
     }
@@ -419,13 +417,6 @@ void DepthwiseConvPerChannel(
     TFLITE_DCHECK_NE(bias_data_copy, nullptr);
   }
 
-  // Shifting from quantization params.
-  auto shift_left = make_aligned_array<uint8_t>(16, out_d);
-  TFLITE_DCHECK_NE(shift_left, nullptr);
-  auto shift_right = make_aligned_array<uint8_t>(16, out_d);
-  TFLITE_DCHECK_NE(shift_right, nullptr);
-  PrepareShiftParams(shift_left.get(), shift_right.get(), output_shift, out_d);
-
   // Cut down into sections
   const int out_y_top = idiv_ceil(pad_h, stride_h);
   const int out_y_bottom =
@@ -435,43 +426,40 @@ void DepthwiseConvPerChannel(
 
   // Top
   DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, 0, out_y_top, 0, out_w, accs_buf);
+      params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+      f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape, out_data,
+      0, out_y_top, 0, out_w, accs_buf);
   // Middle-left
   DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_top, out_y_bottom, 0, out_x_left, accs_buf);
+      params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+      f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape, out_data,
+      out_y_top, out_y_bottom, 0, out_x_left, accs_buf);
   // Center
   do {
     if ((f_h == 3) && (f_w == 3)) {
       if (stride_w == dilation_w) {
         DepthwiseConvPerChannelPatchCenter3x3Reuse6(
-            params, output_multiplier, shift_left.get(), shift_right.get(),
-            in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
-            bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
-            out_x_left, out_x_right, accs_buf);
+            params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+            f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape,
+            out_data, out_y_top, out_y_bottom, out_x_left, out_x_right, accs_buf);
         break;
       }
-      // More variations to be added here
     }
     DepthwiseConvPerChannelPatch(
-        params, output_multiplier, shift_left.get(), shift_right.get(),
-        in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
-        bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
-        out_x_left, out_x_right, accs_buf);
+        params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+        f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape,
+        out_data, out_y_top, out_y_bottom, out_x_left, out_x_right, accs_buf);
   } while (false);
   // Middle-right
   DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_top, out_y_bottom, out_x_right, out_w, accs_buf);
+      params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+      f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape, out_data,
+      out_y_top, out_y_bottom, out_x_right, out_w, accs_buf);
   // Bottom
   DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_bottom, out_h, 0, out_w, accs_buf);
+      params, output_multiplier, output_shift, in_shape, in_data, f_shape,
+      f_data_copy.get(), bias_shape, bias_data_copy.get(), out_shape, out_data,
+      out_y_bottom, out_h, 0, out_w, accs_buf);
 }
 
 void* DepthwiseConvInit(TfLiteContext* context, const char* buffer, size_t length) {

@@ -444,8 +444,8 @@ void Conv2D_4x4(const tflite::ConvParams& params,
 
 void Conv_4_4_16_StrideN(
     const ConvParams& params, const OpDataConvCustom& data,
-    const int32_t* output_multiplier, const uint8_t* shift_left,
-    const uint8_t* shift_right, TfLiteContext* context,
+    const int32_t* output_multiplier, const int32_t* output_shift,
+    TfLiteContext* context,
     const RuntimeShape& input_shape, const int8_t* input_data,
     const RuntimeShape& filter_shape, const int8_t* filter_data,
     const RuntimeShape& bias_shape, const int32_t* bias_data,
@@ -665,10 +665,10 @@ void Conv_4_4_16_StrideN(
   }
 
   // Post process the entire batch of accumulators at once
-  PostprocessAcc(accs_buf, bias_data, shift_left, output_multiplier,
-                 shift_right, output_offset, output_activation_min,
-                 output_activation_max, output_data,
-                 batches * output_height * output_width, output_depth);
+  PostprocessAcc(accs_buf, bias_data, output_multiplier, output_shift,
+                 output_offset, output_activation_min, output_activation_max,
+                 output_data, batches * output_height * output_width,
+                 output_depth);
 }
 
 // Kernel for 4x4 filter, 48 input channels, stride 1
@@ -682,8 +682,8 @@ void Conv_4_4_16_StrideN(
 //     - Accumulate into accs_buf.
 void Conv_4_4_48_Stride1(
     const ConvParams& params, const OpDataConvCustom& data,
-    const int32_t* output_multiplier, const uint8_t* shift_left,
-    const uint8_t* shift_right, TfLiteContext* context,
+    const int32_t* output_multiplier, const int32_t* output_shift,
+    TfLiteContext* context,
     const RuntimeShape& input_shape, const int8_t* input_data,
     const RuntimeShape& filter_shape, const int8_t* filter_data,
     const RuntimeShape& bias_shape, const int32_t* bias_data,
@@ -936,24 +936,23 @@ void Conv_4_4_48_Stride1(
     }
   }
   // After all batches processed
-  PostprocessAcc(accs_buf, bias_data, shift_left, output_multiplier,
-                 shift_right, output_offset, output_activation_min,
-                 output_activation_max, output_data,
-                 batches * output_height * output_width, output_depth);
+  PostprocessAcc(accs_buf, bias_data, output_multiplier, output_shift,
+                 output_offset, output_activation_min, output_activation_max,
+                 output_data, batches * output_height * output_width,
+                 output_depth);
 }
 
 void Conv_4_4_16(const ConvParams& params, const OpDataConvCustom& data,
-                 const int32_t* output_multiplier, const uint8_t* shift_left,
-                 const uint8_t* shift_right, TfLiteContext* context,
+                 const int32_t* output_multiplier, const int32_t* output_shift,
+                 TfLiteContext* context,
                  const RuntimeShape& input_shape, const int8_t* input_data,
                  const RuntimeShape& filter_shape, const int8_t* filter_data,
                  const RuntimeShape& bias_shape, const int32_t* bias_data,
                  const RuntimeShape& output_shape, int8_t* output_data) {
   // Todo add a Stride specific strategy for Stride == 1 and 2
-  Conv_4_4_16_StrideN(params, data, output_multiplier, shift_left, shift_right,
-                      context, input_shape, input_data, filter_shape,
-                      filter_data, bias_shape, bias_data, output_shape,
-                      output_data);
+  Conv_4_4_16_StrideN(params, data, output_multiplier, output_shift, context,
+                      input_shape, input_data, filter_shape, filter_data,
+                      bias_shape, bias_data, output_shape, output_data);
 }
 
 #undef CONV_MAC
@@ -1694,16 +1693,15 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
                output_data, data.repacked_weights_generic, context);
   } else if (filter_height == 4 && filter_width == 4 && input_depth <= 16) {
-    Conv_4_4_16(params, data, output_multiplier, shift_left.get(),
-                shift_right.get(), context, input_shape, input_data,
-                filter_shape, filter_data_copy.get(), bias_shape,
-                bias_data_copy.get(), output_shape, output_data);
+    Conv_4_4_16(params, data, output_multiplier, output_shift, context,
+                input_shape, input_data, filter_shape, filter_data_copy.get(),
+                bias_shape, bias_data_copy.get(), output_shape, output_data);
   } else if (filter_height == 4 && filter_width == 4 && input_depth <= 48 &&
              params.stride_width == 1 && params.stride_height == 1) {
-    Conv_4_4_48_Stride1(params, data, output_multiplier, shift_left.get(),
-                        shift_right.get(), context, input_shape, input_data,
-                        filter_shape, filter_data_copy.get(), bias_shape,
-                        bias_data_copy.get(), output_shape, output_data);
+    Conv_4_4_48_Stride1(params, data, output_multiplier, output_shift, context,
+                        input_shape, input_data, filter_shape,
+                        filter_data_copy.get(), bias_shape, bias_data_copy.get(),
+                        output_shape, output_data);
   } else if (filter_height == 4 && filter_width == 4 &&
              data.repacked_weights_generic != nullptr) {
     Conv2D_4x4(params, data, input_shape, input_data, filter_shape,

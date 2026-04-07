@@ -51,13 +51,14 @@ inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
 }
 
 // TODO(davidgao): use a param structure for reuse?
+// `output_shift` must be the raw per-channel shift from TFLM (same array passed
+// to reference_integer_ops::DepthwiseConvPerChannel / ConvPerChannel).
+// Do not reconstruct shift from uint8 left/right tables: PrepareShiftParams
+// truncates int32 shifts to int8, which breaks channels with |shift| > 127.
 inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
-                           const uint8_t* lshift, const int32_t* multiplier,
-                           const uint8_t* rshift, int32_t out_offset,
-                           int8_t out_min, int8_t out_max, int8_t* out_data,
-                           int out_w, int out_d) {
-  // Scalar post-processing to guarantee bit-exact behavior with TFLM reference
-  // quantization path (MultiplyByQuantizedMultiplier + clamp).
+                           const int32_t* multiplier, const int32_t* output_shift,
+                           int32_t out_offset, int8_t out_min, int8_t out_max,
+                           int8_t* out_data, int out_w, int out_d) {
   for (int out_x = 0; out_x < out_w; ++out_x) {
     for (int c = 0; c < out_d; ++c) {
       int32_t acc = accs[out_x * out_d + c];
@@ -65,8 +66,8 @@ inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
         acc += bias_data[c];
       }
 
-      const int shift = (int8_t)lshift[c] - (int8_t)rshift[c];
-      int32_t q = tflite::MultiplyByQuantizedMultiplier(acc, multiplier[c], shift);
+      int32_t q = tflite::MultiplyByQuantizedMultiplier(
+          acc, multiplier[c], output_shift[c]);
       q += out_offset;
       q = std::max<int32_t>(q, out_min);
       q = std::min<int32_t>(q, out_max);
@@ -76,12 +77,10 @@ inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
 }
 
 inline void PostprocessAcc16(const int32_t* accs, const int32_t* bias_data,
-                             const uint8_t* lshift, const int32_t* multiplier,
-                             const uint8_t* rshift, int32_t out_offset,
+                             const int32_t* multiplier,
+                             const int32_t* output_shift, int32_t out_offset,
                              int16_t out_min, int16_t out_max,
                              int16_t* out_data, int out_w, int out_d) {
-  // Scalar post-processing to ensure absolute bit-exactness with TFLM.
-  // The user requested correctness over performance for this stage.
   for (int out_x = 0; out_x < out_w; ++out_x) {
     for (int c = 0; c < out_d; ++c) {
       int64_t acc = (int64_t)accs[out_x * out_d + c];
@@ -89,9 +88,8 @@ inline void PostprocessAcc16(const int32_t* accs, const int32_t* bias_data,
         acc += (int64_t)bias_data[c];
       }
 
-      int shift = (int8_t)lshift[c] - (int8_t)rshift[c];
-      int32_t result =
-          tflite::MultiplyByQuantizedMultiplier(acc, multiplier[c], shift);
+      int32_t result = tflite::MultiplyByQuantizedMultiplier(
+          acc, multiplier[c], output_shift[c]);
 
       result = std::max<int32_t>(result, out_min);
       result = std::min<int32_t>(result, out_max);
