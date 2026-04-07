@@ -78,6 +78,22 @@ using tflite::micro::GetTensorShape;
 
 constexpr size_t kInputBufferSize = 64 * 1024;
 constexpr int kPadPixel = 4;
+namespace {
+inline int8_t QuantizeAndClampConvAcc(int32_t acc, int32_t bias,
+                                      int32_t output_multiplier,
+                                      int32_t output_shift,
+                                      int32_t output_offset,
+                                      int32_t output_activation_min,
+                                      int32_t output_activation_max) {
+  acc += bias;
+  int32_t acc_scaled = tflite::MultiplyByQuantizedMultiplier(
+      acc, output_multiplier, output_shift);
+  acc_scaled += output_offset;
+  acc_scaled = std::max(acc_scaled, output_activation_min);
+  acc_scaled = std::min(acc_scaled, output_activation_max);
+  return static_cast<int8_t>(acc_scaled);
+}
+}  // namespace
 
 // Helper to pad input. Returns pointer to the start of VALID data (0,0) in the
 // buffer.
@@ -942,6 +958,127 @@ void Conv_4_4_16(const ConvParams& params, const OpDataConvCustom& data,
                       output_data);
 }
 
+// Specialized 1x1 Conv: direct dot-product per output channel with RVV
+// accumulation on input depth. This path primarily targets workloads that
+// currently hit the generic fallback for 1x1 kernels.
+void Conv_1x1_PerChannel(const ConvParams& params,
+                         const int32_t* output_multiplier,
+                         const int32_t* output_shift,
+                         const RuntimeShape& input_shape,
+                         const int8_t* input_data,
+                         const RuntimeShape& filter_shape,
+                         const int8_t* filter_data, const int32_t* bias_data,
+                         const RuntimeShape& output_shape, int8_t* output_data) {
+  const int batches = input_shape.Dims(0);
+  const int input_height = input_shape.Dims(1);
+  const int input_width = input_shape.Dims(2);
+  const int input_depth = input_shape.Dims(3);
+  const int output_height = output_shape.Dims(1);
+  const int output_width = output_shape.Dims(2);
+  const int output_depth = output_shape.Dims(3);
+
+  const int stride_width = params.stride_width;
+  const int stride_height = params.stride_height;
+  const int dilation_width_factor = params.dilation_width_factor;
+  const int dilation_height_factor = params.dilation_height_factor;
+  const int pad_width = params.padding_values.width;
+  const int pad_height = params.padding_values.height;
+  const int32_t input_offset = params.input_offset;
+  const int32_t filter_offset = params.weights_offset;
+  const int32_t output_offset = params.output_offset;
+  const int32_t output_activation_min = params.quantized_activation_min;
+  const int32_t output_activation_max = params.quantized_activation_max;
+
+  const size_t acc_vlmax = __riscv_vsetvlmax_e32m4();
+  const vint32m1_t zero_v = __riscv_vmv_v_x_i32m1(0, 1);
+
+  for (int batch = 0; batch < batches; ++batch) {
+    for (int out_y = 0; out_y < output_height; ++out_y) {
+      const int in_y = out_y * stride_height - pad_height;
+      if (in_y < 0 || in_y >= input_height) {
+        continue;
+      }
+      for (int out_x = 0; out_x < output_width; ++out_x) {
+        const int in_x = out_x * stride_width - pad_width;
+        if (in_x < 0 || in_x >= input_width) {
+          continue;
+        }
+
+        const int8_t* input_ptr =
+            input_data + Offset(input_shape, batch,
+                                in_y + 0 * dilation_height_factor,
+                                in_x + 0 * dilation_width_factor, 0);
+        int out_c = 0;
+
+        for (; out_c + 1 < output_depth; out_c += 2) {
+          vint32m4_t acc0_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          vint32m4_t acc1_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          int d = 0;
+          int d_rem = input_depth;
+          while (d_rem > 0) {
+            size_t vl = __riscv_vsetvl_e8m1(d_rem);
+            vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&input_ptr[d], vl);
+            vint8m1_t w0_v8 =
+                __riscv_vle8_v_i8m1(&filter_data[out_c * input_depth + d], vl);
+            vint8m1_t w1_v8 = __riscv_vle8_v_i8m1(
+                &filter_data[(out_c + 1) * input_depth + d], vl);
+            vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+            vint16m2_t w0_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(w0_v8, vl), filter_offset, vl);
+            vint16m2_t w1_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(w1_v8, vl), filter_offset, vl);
+            acc0_v = __riscv_vwmacc_vv_i32m4(acc0_v, in_v16, w0_v16, vl);
+            acc1_v = __riscv_vwmacc_vv_i32m4(acc1_v, in_v16, w1_v16, vl);
+            d += vl;
+            d_rem -= vl;
+          }
+          const int32_t acc0 = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc0_v, zero_v, acc_vlmax));
+          const int32_t acc1 = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc1_v, zero_v, acc_vlmax));
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c)] =
+              QuantizeAndClampConvAcc(
+                  acc0, bias_data ? bias_data[out_c] : 0,
+                  output_multiplier[out_c], output_shift[out_c], output_offset,
+                  output_activation_min, output_activation_max);
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c + 1)] =
+              QuantizeAndClampConvAcc(
+                  acc1, bias_data ? bias_data[out_c + 1] : 0,
+                  output_multiplier[out_c + 1], output_shift[out_c + 1],
+                  output_offset, output_activation_min, output_activation_max);
+        }
+
+        for (; out_c < output_depth; ++out_c) {
+          vint32m4_t acc_v = __riscv_vmv_v_x_i32m4(0, acc_vlmax);
+          int d = 0;
+          int d_rem = input_depth;
+          while (d_rem > 0) {
+            size_t vl = __riscv_vsetvl_e8m1(d_rem);
+            vint8m1_t in_v8 = __riscv_vle8_v_i8m1(&input_ptr[d], vl);
+            vint8m1_t w_v8 =
+                __riscv_vle8_v_i8m1(&filter_data[out_c * input_depth + d], vl);
+            vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+            vint16m2_t w_v16 = __riscv_vadd_vx_i16m2(
+                __riscv_vsext_vf2_i16m2(w_v8, vl), filter_offset, vl);
+            acc_v = __riscv_vwmacc_vv_i32m4(acc_v, in_v16, w_v16, vl);
+            d += vl;
+            d_rem -= vl;
+          }
+          const int32_t acc = __riscv_vmv_x_s_i32m1_i32(
+              __riscv_vredsum_vs_i32m4_i32m1(acc_v, zero_v, acc_vlmax));
+          output_data[Offset(output_shape, batch, out_y, out_x, out_c)] =
+              QuantizeAndClampConvAcc(
+                  acc, bias_data ? bias_data[out_c] : 0,
+                  output_multiplier[out_c], output_shift[out_c], output_offset,
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
+
 #undef CONV_MAC
 
 void RepackWeightsD48(const int8_t* __restrict src, int16_t* __restrict dst,
@@ -1321,6 +1458,10 @@ void ConvPerChannel(const ConvParams& params, const OpDataConvCustom& data,
     Conv2D_4x4(params, data, input_shape, input_data, filter_shape,
                filter_data_copy.get(), bias_data_copy.get(), output_shape,
                output_data, data.repacked_weights_generic, context);
+  } else if (filter_height == 1 && filter_width == 1) {
+    Conv_1x1_PerChannel(params, output_multiplier, output_shift, input_shape,
+                        input_data, filter_shape, filter_data_copy.get(),
+                        bias_data_copy.get(), output_shape, output_data);
   } else {
     MicroPrintf("Fallback kernel: fh=%d fw=%d id=%d od=%d", filter_height,
                 filter_width, input_depth, output_depth);
