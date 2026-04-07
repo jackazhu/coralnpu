@@ -216,6 +216,31 @@
 - 是否满足 C 完成条件：`No`
 - 若 No，阻塞原因：当前仅完成 C 路径骨架，尚未接入真实 custom GEMM 指令编码/decode/mpact/simulator/toolchain 端到端链路。
 
+### C-Entry-002
+- 日期：2026-04-06
+- Git commit：`7a1ebaf`
+- 改动摘要（含 decode/mpact/toolchain）：完成 C2 最小可用“真实指令编码+RTL 链路”接入：新增 `VCUSTOMGEMM(6'b101_110)` 指令编码并接入 `rvv_backend_decode_unit_ari/ari_de2`（EMUL/EEW/合法性/uop_class/vs3_valid/rs1_data 路径），执行侧在 `rvv_backend_mac_unit` 复用 `VMACC` 数据通路；软件侧 `custom_gemm.cc` 增加固定编码探针（`.word 0xBA002057`）用于后续 capability/执行链路联调，当前仍保持 fallback 返回 false。
+- fallback 验证方式：默认编译配置下 custom GEMM feature/capability 关闭，`FullyConnectedEval` 不进入 custom 分支；即使未来开启，`TryFullyConnectedCustomGemm` 当前也在探针后返回 false，功能语义保持回落到既有 RVV 路径。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| FC 功能+性能 | `bazel test --cache_test_results=no --test_output=streamed //tests/cocotb/tutorial/tfmicro:cocotb_fully_connected` | PASS | `fc_64x64 opt_cycles=12782`，与 C-001 保持一致 |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 新增 custom funct6 后无功能回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=516177367` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=327413977` |
+
+#### Benchmark 对照（C-Entry-002 vs C-Entry-001）
+| Workload | Metric | Before(C-001) | After(C-002) | Delta | 结论 |
+|---|---|---|---|---|---|
+| fc_64x64 | opt_cycles | 12782 | 12782 | 0.00% | 持平（新增链路默认不扰动热路径） |
+| npusim_mobilenet | cycles | 516177367 | 516177367 | 0.00% | 持平 |
+| npusim_bcresnet | cycles | 327413977 | 327413977 | 0.00% | 持平 |
+
+#### 阶段结论
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：当前仅完成“编码+decode+执行占位”最小闭环；尚未完成 mpact/simulator/toolchain 的助记符级支持与真正 GEMM 指令语义执行。
+
 ## 5. 决策与问题跟踪
 
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
@@ -229,5 +254,6 @@
 | B-001 | 2026-04-06 | Action | B 第 2 轮尝试（加深 mul 结果缓冲）在 `fc_64x64` 上 `opt_cycles 12839 -> 12851`，确认为负优化，已用 `git revert` 回退（`8d5a6b3`） | B | Done |
 | B-002 | 2026-04-06 | Action | B 第 3 轮尝试（arbiter fast path）在 `fc_64x64` 上 `opt_cycles 12839 -> 12854`，确认为负优化，已用 `git revert` 回退（`3c0e237`） | B | Done |
 | C-001 | 2026-04-06 | Action | 启动 C 阶段：新增 `custom_gemm` 模块并在 `fully_connected` 接入 custom-path + fallback 骨架，默认配置下确认 fallback 回归通过且不退化 | C | Done |
+| C-002 | 2026-04-06 | Action | 打通 C2 最小 custom 指令链路：新增 `VCUSTOMGEMM` 编码并接入 RVV decode/mac 占位执行；软件补充固定编码探针（`.word 0xBA002057`），默认配置保持 fallback 与性能不变 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
