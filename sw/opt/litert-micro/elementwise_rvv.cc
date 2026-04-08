@@ -298,12 +298,9 @@ TfLiteStatus AddEvalRVV(TfLiteContext* ctx, TfLiteNode* node) {
     AddInt8(tflite::MatchingElementsSize(s1, s2, so), p, d1, d2, do_);
     return kTfLiteOk;
   }
-  // Broadcast: [1,H,W,C] + [1,1,1,C]
-  const int total = so.FlatSize(), tile = s2.FlatSize();
-  if (tile > 0 && total % tile == 0) {
-    AddInt8Broadcast(total, tile, p, d1, d2, do_);
-    return kTfLiteOk;
-  }
+  // Broadcast: use reference for correctness.
+  // Tiled broadcast requires careful param mapping (which input is replicated);
+  // use the reference implementation until fully validated.
   tflite::reference_integer_ops::BroadcastAdd6DSlow(p, s1, d1, s2, d2, so, do_);
   return kTfLiteOk;
 }
@@ -339,12 +336,7 @@ TfLiteStatus MulEvalRVV(TfLiteContext* ctx, TfLiteNode* node) {
     MulInt8(so.FlatSize(), p, d1, d2, do_);
     return kTfLiteOk;
   }
-  // Broadcast [1,H,W,C] * [1,1,1,C]
-  const int total = so.FlatSize(), tile = s2.FlatSize();
-  if (tile > 0 && total % tile == 0) {
-    MulInt8Broadcast(total, tile, p, d1, d2, do_);
-    return kTfLiteOk;
-  }
+  // Broadcast: use reference for correctness.
   tflite::reference_integer_ops::BroadcastMul6DSlow(p, s1, d1, s2, d2, so, do_);
   return kTfLiteOk;
 }
@@ -400,26 +392,6 @@ TfLiteStatus SumEvalRVV(TfLiteContext* ctx, TfLiteNode* node) {
     }
     return kTfLiteOk;
   }
-
-  // Also: [B,H,W,C] → [B,1,1,C] (global spatial sum)
-  if (ind == 4 && ond == 4 &&
-      is.Dims(0) == os.Dims(0) &&
-      os.Dims(1) == 1 && os.Dims(2) == 1 &&
-      is.Dims(3) == os.Dims(3)) {
-    const int B = is.Dims(0);
-    const int H = is.Dims(1);
-    const int W = is.Dims(2);
-    const int C = is.Dims(3);
-    const int8_t* inp = tflite::micro::GetTensorData<int8_t>(in);
-    int8_t*       op  = tflite::micro::GetTensorData<int8_t>(out);
-    for (int b = 0; b < B; ++b) {
-      SumHW(inp + b * H * W * C, H, W, C,
-            data->input_zp, data->multiplier, data->shift, data->output_zp,
-            (int8_t)-128, (int8_t)127, op + b * C);
-    }
-    return kTfLiteOk;
-  }
-
   return tflite::EvalSumHelper(ctx, node, data);
 }
 

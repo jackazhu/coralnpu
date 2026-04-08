@@ -156,6 +156,70 @@ coralnpu_v2_binary(
     ],
 )
 
+coralnpu_v2_binary(
+    name = "run_bcresnet_fullref_binary",
+    srcs = [
+        "bcresnet_sc35_int8_tflite_cc",
+        "run_bcresnet_fullref.cc",
+    ],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
+    dtcm_size_kbytes = 1024,
+    itcm_size_kbytes = 1024,
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+py_binary(
+    name = "npusim_run_bcresnet_fullref",
+    srcs = ["npusim_run_bcresnet_fullref.py"],
+    data = [":run_bcresnet_fullref_binary"],
+    deps = [
+        "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
+        "@bazel_tools//tools/python/runfiles",
+        requirement("numpy"),
+    ],
+)
+
+coralnpu_v2_binary(
+    name = "run_bcresnet_ref_binary",
+    srcs = [
+        "bcresnet_sc35_int8_tflite_cc",
+        "run_bcresnet_ref.cc",
+    ],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
+    dtcm_size_kbytes = 1024,
+    itcm_size_kbytes = 1024,
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sw/opt:rvv_opt",
+        "//sw/opt/litert-micro:conv",
+        "//sw/opt/litert-micro:depthwise_conv",
+        "//sw/opt/litert-micro:pad",
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+py_binary(
+    name = "npusim_run_bcresnet_ref",
+    srcs = ["npusim_run_bcresnet_ref.py"],
+    data = [":run_bcresnet_ref_binary"],
+    deps = [
+        "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
+        "@bazel_tools//tools/python/runfiles",
+        requirement("numpy"),
+    ],
+)
+
 generate_cc_arrays(
     name = "bcresnet_sc35_int8_tflite_cc",
     src = "models/bcresnet_sc35_int8.tflite",
