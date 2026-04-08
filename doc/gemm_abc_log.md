@@ -11,7 +11,7 @@
 |---|---|---|---|---|---|
 | A（RVV GEMM 软件优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成完整验证矩阵与 benchmark 收益确认 |
 | B（mulmac/mac 后端优化） | Done | AI Agent | 2026-04-06 | 2026-04-06 | 已完成首轮有效优化并完成多轮负/零收益尝试回退；阶段收口，保留净正收益改动 |
-| C（指令+工具链联动） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成 C 阶段入口骨架（feature flag + capability + fallback）并通过回归 |
+| C（指令+工具链联动） | In Progress | AI Agent | 2026-04-06 | TBD | 已完成 C1~C7（含 1x1/grouped-1x1 与 grouped-5x5 热点优化）并完成与 `origin/main` 冲突合并回归 |
 
 状态枚举建议：`Not Started` / `In Progress` / `Blocked` / `Done`
 
@@ -294,7 +294,7 @@
 
 ### C-Entry-005
 - 日期：2026-04-06
-- Git commit：`TBD`
+- Git commit：`1762c7b`
 - 改动摘要（含 decode/mpact/toolchain）：继续优化 `ConvPerChannel` 的 1x1 分发与实现：新增 `Conv_1x1_PerChannel_Grouped` 处理 `groups>1` 场景；同时保留 `groups==1` 的原快路径（避免被分组索引开销拖慢）。`5x5` 专用内核仍作为实验原型保留，但不放开到 grouped 场景分发，避免网络级回退。
 - fallback 验证方式：`1x1` 仅在 grouped 场景命中新 grouped kernel；`5x5 grouped` 继续走 reference fallback（日志仍可见 `fh=5 fw=5 id=40 od=40`），保证当前网络基线稳定。
 
@@ -316,6 +316,43 @@
 - 是否满足 C 完成条件：`No`
 - 若 No，阻塞原因：当前已完成“1x1（含 grouped）稳定收益+5x5 原型收敛”，后续仍需聚焦 depthwise/5x5 真正净收益路径以及 custom GEMM 指令语义闭环。
 
+### C-Entry-006
+- 日期：2026-04-07
+- Git commit：`84405d8`, `68afaba`
+- 改动摘要（含 decode/mpact/toolchain）：基于热点参数诊断（`fh=5 fw=5 id=40 od=40 fid=2 groups=20 fpg=2`），新增 `Conv_5x5_Grouped2x2_PerChannel` 专用 RVV 路径，按输出通道向量化执行 2x2 grouped 的 5x5 累加（`vle8 + vlse8 + vwmacc`）；保持其它卷积分支不变。
+- fallback 验证方式：仅当 `filter_height==5 && filter_width==5 && filter_input_depth==2 && filters_per_group==2` 命中新分支；其它 5x5/grouped 形态继续沿原有分发/回退路径。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| Conv 算子正确性回归 | `bazel test --cache_test_results=no --test_output=streamed //sw/opt/litert-micro/test:conv_sim_test` | PASS | 新增热点分支后全部 case 输出匹配 reference |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=204339890` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=282055557`（复测一致） |
+
+#### Benchmark 对照（C-Entry-006 vs C-Entry-005）
+| Workload | Metric | Before(C-005) | After(C-006) | Delta | 结论 |
+|---|---|---|---|---|---|
+| npusim_mobilenet | cycles | 207447949 | 204339890 | -1.50% | 稳定改善 |
+| npusim_bcresnet | cycles | 285472441 | 282055557 | -1.20% | 稳定改善（命中 5x5 grouped 热点） |
+
+#### 阶段结论
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：C 阶段网络级热点已继续下降，但 custom GEMM 真指令语义（mpact/simulator/toolchain 助记符级闭环）仍未完成。
+
+### C-Entry-007
+- 日期：2026-04-07
+- Git commit：`9526b5b`
+- 改动摘要（含 decode/mpact/toolchain）：合并 `origin/main` 并解决冲突，覆盖 `conv.cc`、`npusim_run_bcresnet.py`、`run_bcresnet.cc` 三处冲突；冲突分类均为“简单冲突”，通过并集合并保留双方有效信息（计数器/日志/断言/标准 `PERF_CYCLES` 输出）。
+- fallback 验证方式：合并后重新执行算子回归与两个端到端样例，确认 `inference_status=0` 且关键路径可运行。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| Conv 算子正确性回归 | `bazel test --cache_test_results=no --test_output=errors //sw/opt/litert-micro/test:conv_sim_test` | PASS | 合并后功能一致 |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=254702861` |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=40017353` |
+
 ## 5. 决策与问题跟踪
 
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
@@ -333,6 +370,7 @@
 | C-003 | 2026-04-06 | Action | FC 热路径升级为 4-way 并行累加（再 2-way/tail 收尾），`fc_64x64 opt_cycles 12782 -> 11156`，且 npusim mobilenet/bcresnet 周期与功能保持稳定 | C | Done |
 | C-004 | 2026-04-06 | Action | 新增 `1x1` 专用 RVV Conv 内核并接入 `ConvPerChannel` 分发，网络级周期显著下降：mobilenet `-59.91%`、bcresnet `-12.69%`，功能回归通过 | C | Done |
 | C-005 | 2026-04-06 | Action | 继续优化并收敛：补齐 `1x1 grouped conv` 专用路径（`groups>1`）且保持 `groups==1` 快路径不退化；`5x5` 专用原型保留但暂不放开到 grouped 场景（网络实测无正收益）；当前端到端周期稳定为 mobilenet `207447949`、bcresnet `285472441`。 | C | Done |
-| C-006 | 2026-04-07 | Action | 继续优化（多角度 + 资料检索后落地）：针对 bcresnet 实际热点 `fh=5 fw=5 id=40 od=40 fid=2 groups=20 fpg=2`，新增 `5x5 grouped(2x2)` 专用 RVV 路径 `Conv_5x5_Grouped2x2_PerChannel`，按输出通道向量化（`vle8 + vlse8 + vwmacc`）替换 reference fallback；保持其它分支不变。 | C | Done |
+| C-006 | 2026-04-07 | Action | 继续优化（多角度 + 资料检索后落地）：针对 bcresnet 实际热点 `fh=5 fw=5 id=40 od=40 fid=2 groups=20 fpg=2`，新增 `5x5 grouped(2x2)` 专用 RVV 路径 `Conv_5x5_Grouped2x2_PerChannel`，按输出通道向量化（`vle8 + vlse8 + vwmacc`）替换 reference fallback；网络周期稳定下降（mobilenet `-1.50%`，bcresnet `-1.20%`）。 | C | Done |
+| C-007 | 2026-04-07 | Action | 与 `origin/main` 完成冲突合并（`conv.cc`、`npusim_run_bcresnet.py`、`run_bcresnet.cc`），冲突均判定为简单冲突并已通过并集合并；回归与端到端重新验证通过。 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
