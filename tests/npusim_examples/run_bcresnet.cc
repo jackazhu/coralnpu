@@ -20,7 +20,9 @@
 
 #include "sw/opt/litert-micro/conv.h"
 #include "sw/opt/litert-micro/depthwise_conv.h"
+#include "sw/opt/litert-micro/elementwise_rvv.h"
 #include "sw/opt/litert-micro/pad.h"
+#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -107,9 +109,13 @@ using coralnpu_v2::opt::litert_micro::GetConv2dEvalCount;
 using coralnpu_v2::opt::litert_micro::GetConv2dFallbackCount;
 using coralnpu_v2::opt::litert_micro::GetDepthwiseConv2dEvalCount;
 using coralnpu_v2::opt::litert_micro::GetDepthwiseConv2dFallbackCount;
+using coralnpu_v2::opt::litert_micro::Register_ADD_RVV;
 using coralnpu_v2::opt::litert_micro::Register_CONV_2D;
 using coralnpu_v2::opt::litert_micro::Register_DEPTHWISE_CONV_2D;
+using coralnpu_v2::opt::litert_micro::Register_LOGISTIC_RVV;
+using coralnpu_v2::opt::litert_micro::Register_MUL_RVV;
 using coralnpu_v2::opt::litert_micro::Register_PAD_RVV;
+using coralnpu_v2::opt::litert_micro::Register_SUM_RVV;
 using coralnpu_v2::opt::litert_micro::ResetConv2dEvalCounters;
 using coralnpu_v2::opt::litert_micro::ResetDepthwiseConv2dEvalCounters;
 
@@ -120,11 +126,24 @@ TfLiteStatus RegisterOps(BcResnetOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(op_resolver.AddReshape());
   TF_LITE_ENSURE_STATUS(op_resolver.AddPad(Register_PAD_RVV()));
   TF_LITE_ENSURE_STATUS(op_resolver.AddTranspose());
-  TF_LITE_ENSURE_STATUS(op_resolver.AddMul());
-  TF_LITE_ENSURE_STATUS(op_resolver.AddAdd());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddMul(Register_MUL_RVV()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddAdd(Register_ADD_RVV()));
   TF_LITE_ENSURE_STATUS(op_resolver.AddSum());
   TF_LITE_ENSURE_STATUS(op_resolver.AddLogistic());
   TF_LITE_ENSURE_STATUS(op_resolver.AddLogSoftmax());
+  // Patch SUM and LOGISTIC invoke pointers with RVV-optimized versions.
+  // FindOp returns const*, but the underlying array is mutable; cast is safe
+  // because the registration was just inserted into our own resolver.
+  {
+    auto* r = const_cast<TFLMRegistration*>(
+        op_resolver.FindOp(tflite::BuiltinOperator_SUM));
+    if (r) r->invoke = Register_SUM_RVV().invoke;
+  }
+  {
+    auto* r = const_cast<TFLMRegistration*>(
+        op_resolver.FindOp(tflite::BuiltinOperator_LOGISTIC));
+    if (r) r->invoke = Register_LOGISTIC_RVV().invoke;
+  }
   return kTfLiteOk;
 }
 }  // namespace
