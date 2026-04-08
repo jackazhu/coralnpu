@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from bazel_tools.tools.python.runfiles import runfiles
 from coralnpu_v2_sim_utils import CoralNPUV2Simulator
 import numpy as np
@@ -17,7 +31,8 @@ def run_bcresnet():
 
     # BCResNet int8 input shape: [1, 1, 40, 101].
     if symbol_map.get("inference_input"):
-        input_data = np.random.randint(
+        rng = np.random.default_rng(seed=42)
+        input_data = rng.integers(
             low=-128, high=127, size=(1 * 1 * 40 * 101), dtype=np.int8
         )
         npu_sim.write_memory(
@@ -28,7 +43,8 @@ def run_bcresnet():
     print("Running simulation...", flush=True)
     npu_sim.run()
     npu_sim.wait()
-    print(f"cycles taken by the simulation {npu_sim.get_cycle_count()}")
+    cycle_count = npu_sim.get_cycle_count()
+    print(f"PERF_CYCLES|runner=npusim|test=npusim_run_bcresnet|cycles={cycle_count}")
 
     if symbol_map.get("inference_output"):
         output_raw = npu_sim.read_memory(symbol_map["inference_output"], 35)
@@ -42,6 +58,7 @@ def run_bcresnet():
     if symbol_map.get("inference_status"):
         inference_status = npu_sim.read_memory(symbol_map["inference_status"], 1)[0]
         print(f"inference_status {inference_status}")
+        assert inference_status == 0, f"inference_status={inference_status}"
 
 
 if __name__ == "__main__":

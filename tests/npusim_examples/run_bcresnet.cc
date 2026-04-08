@@ -138,23 +138,31 @@ uint8_t tensor_arena[kTensorArenaSize]
 }
 
 int main(int argc, char** argv) {
+  (void)argc;
+  (void)argv;
   const tflite::Model* model = tflite::GetModel(g_bcresnet_sc35_int8_model_data);
-  BcResnetOpResolver op_resolver;
-  CycleProfiler profiler;
-  RegisterOps(op_resolver);
-  printf("Halted after op resolver\n");
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    printf("Error: schema mismatch\n");
+    return -1;
+  }
 
+  BcResnetOpResolver op_resolver;
+  if (RegisterOps(op_resolver) != kTfLiteOk) {
+    printf("Error: op resolver failed\n");
+    return -1;
+  }
+
+  CycleProfiler profiler;
   tflite::MicroInterpreter interpreter(model, op_resolver, tensor_arena,
                                        kTensorArenaSize, nullptr, &profiler);
-  printf("Halted after Interpreter setup\n");
   if (interpreter.AllocateTensors() != kTfLiteOk) {
-    printf("Error during AllocateTensors\n");
+    printf("Error: AllocateTensors failed\n");
     return -1;
   }
 
   TfLiteTensor* input = interpreter.input(0);
   if (input == nullptr) {
-    printf("Error getting input tensor\n");
+    printf("Error: input tensor null\n");
     return -1;
   }
   std::memcpy(input->data.data, inference_input, input->bytes);
@@ -163,13 +171,13 @@ int main(int argc, char** argv) {
   ResetConv2dEvalCounters();
   ResetDepthwiseConv2dEvalCounters();
   if (interpreter.Invoke() != kTfLiteOk) {
-    printf("Error during Invoke\n");
+    printf("Error: Invoke failed\n");
     return -1;
   }
 
   TfLiteTensor* output = interpreter.output(0);
   if (output == nullptr) {
-    printf("Error getting output tensor\n");
+    printf("Error: output tensor null\n");
     return -1;
   }
   std::memcpy(inference_output, output->data.data, sizeof(inference_output));
@@ -177,8 +185,7 @@ int main(int argc, char** argv) {
   profiler.LogTicksPerTagCsv();
   printf("PROFILE_CSV_END\n");
   printf("FALLBACK_SUMMARY,CONV_2D,%" PRIu32 ",%" PRIu32 "\n",
-         GetConv2dFallbackCount(),
-         GetConv2dEvalCount());
+         GetConv2dFallbackCount(), GetConv2dEvalCount());
   printf("FALLBACK_SUMMARY,DEPTHWISE_CONV_2D,%" PRIu32 ",%" PRIu32 "\n",
          GetDepthwiseConv2dFallbackCount(), GetDepthwiseConv2dEvalCount());
   printf("Invoke successful\n");

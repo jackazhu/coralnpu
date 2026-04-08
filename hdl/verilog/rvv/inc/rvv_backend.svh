@@ -266,6 +266,8 @@ typedef enum logic [3:0] {
   parameter VMADD           =   6'b101_001;
   parameter VNMSUB          =   6'b101_011;
   parameter VMACC           =   6'b101_101;
+  // CoralNPU custom GEMM bootstrap op in OP-M* space, mapped to MAC pipe.
+  parameter VCUSTOMGEMM     =   6'b101_110;
   parameter VNMSAC          =   6'b101_111;
   parameter VWADDU          =   6'b110_000;
   parameter VWADD           =   6'b110_001;

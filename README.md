@@ -44,5 +44,10 @@ bazel build //tests/verilator_sim:core_mini_axi_sim
 bazel-bin/tests/verilator_sim/core_mini_axi_sim --binary bazel-out/k8-fastbuild-ST-dd8dc713f32d/bin/examples/coralnpu_v2_hello_world_add_floats.elf
 ```
 
+## GEMM 升级管理文档（A -> B -> C）
+
+- 计划文档：`doc/gemm_abc_plan.md`
+- 进度与 benchmark 日志：`doc/gemm_abc_log.md`
+
 
 ![](doc/images/Coral_Logo_200px-2x.png)

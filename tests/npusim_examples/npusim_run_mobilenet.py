@@ -25,13 +25,15 @@ def run_full_mobilenet():
     npu_sim.load_program(elf_file, entry_point)
 
     if symbol_map.get('inference_input'):
-        input_data = np.random.randint(-128, 127, size=(224 * 224 * 3,), dtype=np.int8)
+        rng = np.random.default_rng(seed=42)
+        input_data = rng.integers(-128, 127, size=(224 * 224 * 3,), dtype=np.int8)
         npu_sim.write_memory(symbol_map['inference_input'], input_data)
 
     print("Running simulation...", flush=True)
     npu_sim.run()
     npu_sim.wait()
-    print(f"cycles taken by the simulation {npu_sim.get_cycle_count()}")
+    cycle_count = npu_sim.get_cycle_count()
+    print(f"PERF_CYCLES|runner=npusim|test=npusim_run_mobilenet|cycles={cycle_count}")
     if symbol_map.get('inference_output'):
         output_data = npu_sim.read_memory(symbol_map['inference_output'], 5)
         output_data = np.array(output_data, dtype=np.int8)
@@ -41,6 +43,7 @@ def run_full_mobilenet():
     if symbol_map.get('inference_status'):
         inference_status = npu_sim.read_memory(symbol_map['inference_status'], 1)[0]
         print(f"inference_status {inference_status}")
+        assert inference_status == 0, f"inference_status={inference_status}"
 
 if __name__ == "__main__":
   run_full_mobilenet()

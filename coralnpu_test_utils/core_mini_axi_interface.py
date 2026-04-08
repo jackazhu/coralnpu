@@ -16,6 +16,7 @@ import cocotb
 import itertools
 import math
 import numpy as np
+import os
 import random
 
 
@@ -191,6 +192,7 @@ class CoreMiniAxiInterface:
     self.csr_base_addr = csr_base_addr
     self.memory_base_addr = ext_mem_base_addr
     self.memory = np.zeros([ext_mem_size], dtype=np.uint8)
+    self._perf_cycle_seq = 0
     self.master_arfifo = Queue()
     self.master_awfifo = Queue()
     self.master_rfifo = Queue()
@@ -895,6 +897,13 @@ class CoreMiniAxiInterface:
       timeout_cycles = timeout_cycles - 1
       cycle_count += 1
     assert timeout_cycles > 0
+    self._perf_cycle_seq += 1
+    testcase = os.environ.get("TESTBRIDGE_TEST_ONLY", "unknown")
+    print(
+        f"PERF_CYCLES|runner=cocotb|test={testcase}|wait=halt|"
+        f"seq={self._perf_cycle_seq}|cycles={cycle_count}",
+        flush=True,
+    )
     return cycle_count
 
   async def wait_for_halted_semihost(self, elf, timeout_cycles=1000000):
@@ -917,4 +926,11 @@ class CoreMiniAxiInterface:
       timeout_cycles = timeout_cycles - 1
       cycle_count += 1
     assert timeout_cycles > 0
+    self._perf_cycle_seq += 1
+    testcase = os.environ.get("TESTBRIDGE_TEST_ONLY", "unknown")
+    print(
+        f"PERF_CYCLES|runner=cocotb|test={testcase}|wait=fault|"
+        f"seq={self._perf_cycle_seq}|cycles={cycle_count}",
+        flush=True,
+    )
     return cycle_count

@@ -78,6 +78,7 @@ generate_cc_arrays(
 # BEGIN_TESTCASES_FOR_running_tflite
 RUN_MOBILENET_TEST = [
     "core_mini_rvv_mobilenet_v1",
+    "core_mini_rvv_bcresnet",
 ]
 # END_TESTCASES_FOR_running_tflite
 
@@ -101,7 +102,10 @@ cocotb_test_suite(
             "//coralnpu_test_utils:sim_test_fixture",
             "@rules_python//python/runfiles",
         ],
-        "data": ["run_mobilenet_v1_025_partial_binary.elf"],
+        "data": [
+            "run_mobilenet_v1_025_partial_binary.elf",
+            "//tests/npusim_examples:run_bcresnet_binary",
+        ],
     },
     vcs_build_args = VCS_BUILD_ARGS,
     vcs_data = glob(["**/*.elf"]) + [

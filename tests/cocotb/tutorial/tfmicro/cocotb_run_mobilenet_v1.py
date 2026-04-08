@@ -19,20 +19,56 @@ from coralnpu_test_utils.sim_test_fixture import Fixture
 from bazel_tools.tools.python.runfiles import runfiles
 
 
+async def run_tflite_case(
+    fixture: Fixture,
+    runfiles_root,
+    elf_path: str,
+    case_name: str,
+    status_msg_size: int,
+    timeout_cycles: int,
+):
+    await fixture.load_elf_and_lookup_symbols(
+        runfiles_root.Rlocation(elf_path),
+        ["inference_status", "inference_status_message"],
+    )
+    cycle_count = await fixture.run_to_halt(timeout_cycles=timeout_cycles)
+    print(
+        f"PERF_CYCLES|runner=cocotb|test={case_name}|cycles={cycle_count}",
+        flush=True,
+    )
+    tflite_inference_status = (await fixture.read_word("inference_status")).view(np.int32)
+    tflite_inference_message = bytes(
+        (await fixture.read("inference_status_message", status_msg_size))
+    ).decode(errors="ignore").rstrip("\x00")
+    assert tflite_inference_status == 0, tflite_inference_message
+
+
 @cocotb.test()
 async def core_mini_rvv_mobilenet_v1(dut):
-
     fixture = await Fixture.Create(dut, highmem=True)
     r = runfiles.Create()
-    elf_files = ['run_mobilenet_v1_025_partial_binary.elf']
-    for elf_file in elf_files:
-        await fixture.load_elf_and_lookup_symbols(
-            r.Rlocation('coralnpu_hw/tests/cocotb/tutorial/tfmicro/' + elf_file),
-            ['inference_status', 'inference_status_message'])
-        # NOTE: Running the example in DEBUG mode is too slow could take more than 500Million cycles
-        cycle_count = await fixture.run_to_halt(timeout_cycles=130_000_000)
-        print(f"Total number of execution cycles: {cycle_count} \n", flush=True)
-        tflite_inference_status = (await fixture.read_word('inference_status')).view(np.int32)
-        tflite_inference_message = bytes((await fixture.read('inference_status_message', 31))).decode()
-        assert  tflite_inference_status == 0 , tflite_inference_message
-        print(f" \n Partial mobilenet Invoke() successful \n", flush=True)
+    await run_tflite_case(
+        fixture,
+        r,
+        "coralnpu_hw/tests/cocotb/tutorial/tfmicro/run_mobilenet_v1_025_partial_binary.elf",
+        "core_mini_rvv_mobilenet_v1",
+        status_msg_size=31,
+        # NOTE: Running the example in DEBUG mode is too slow.
+        timeout_cycles=130_000_000,
+    )
+    print("\nPartial mobilenet Invoke() successful\n", flush=True)
+
+
+@cocotb.test()
+async def core_mini_rvv_bcresnet(dut):
+    fixture = await Fixture.Create(dut, highmem=True)
+    r = runfiles.Create()
+    await run_tflite_case(
+        fixture,
+        r,
+        "coralnpu_hw/tests/npusim_examples/run_bcresnet_binary.elf",
+        "core_mini_rvv_bcresnet",
+        status_msg_size=63,
+        timeout_cycles=30_000_000,
+    )
+    print("\nBCResNet Invoke() successful\n", flush=True)
