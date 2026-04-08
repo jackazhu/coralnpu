@@ -155,3 +155,17 @@ cc_library(
         "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
     ],
 )
+
+cc_library(
+    name = "pad",
+    srcs = ["pad.cc"],
+    hdrs = ["pad.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/kernels/internal:reference_base",
+        "@tflite_micro//tensorflow/lite/micro:micro_common",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
+    ],
+)

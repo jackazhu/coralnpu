@@ -104,6 +104,7 @@ coralnpu_v2_binary(
         "//sw/opt:rvv_opt",
         "//sw/opt/litert-micro:conv",
         "//sw/opt/litert-micro:depthwise_conv",
+        "//sw/opt/litert-micro:pad",
         "@tflite_micro//tensorflow/lite/micro:micro_framework",
         "@tflite_micro//tensorflow/lite/micro:micro_log",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",

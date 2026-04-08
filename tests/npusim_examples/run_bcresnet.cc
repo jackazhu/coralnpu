@@ -20,6 +20,7 @@
 
 #include "sw/opt/litert-micro/conv.h"
 #include "sw/opt/litert-micro/depthwise_conv.h"
+#include "sw/opt/litert-micro/pad.h"
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -108,6 +109,7 @@ using coralnpu_v2::opt::litert_micro::GetDepthwiseConv2dEvalCount;
 using coralnpu_v2::opt::litert_micro::GetDepthwiseConv2dFallbackCount;
 using coralnpu_v2::opt::litert_micro::Register_CONV_2D;
 using coralnpu_v2::opt::litert_micro::Register_DEPTHWISE_CONV_2D;
+using coralnpu_v2::opt::litert_micro::Register_PAD_RVV;
 using coralnpu_v2::opt::litert_micro::ResetConv2dEvalCounters;
 using coralnpu_v2::opt::litert_micro::ResetDepthwiseConv2dEvalCounters;
 
@@ -116,7 +118,7 @@ TfLiteStatus RegisterOps(BcResnetOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(
       op_resolver.AddDepthwiseConv2D(Register_DEPTHWISE_CONV_2D()));
   TF_LITE_ENSURE_STATUS(op_resolver.AddReshape());
-  TF_LITE_ENSURE_STATUS(op_resolver.AddPad());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddPad(Register_PAD_RVV()));
   TF_LITE_ENSURE_STATUS(op_resolver.AddTranspose());
   TF_LITE_ENSURE_STATUS(op_resolver.AddMul());
   TF_LITE_ENSURE_STATUS(op_resolver.AddAdd());
