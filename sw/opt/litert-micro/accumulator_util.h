@@ -50,7 +50,13 @@ inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
   }
 }
 
-// TODO(davidgao): use a param structure for reuse?
+// PostprocessAcc: apply per-channel quantize/clamp to accumulator buffer.
+// Layout: accs[out_x * out_d + out_ch] (HWC format).
+// Outer loop: out_ch blocks (vl = vsetvl_e32m8); inner: out_x scalar.
+//
+// Fast path for out_d <= VLMAX (single out_ch pass):
+//   Process 4 out_x positions per iteration to reduce loop overhead.
+//   Bias/mult/shift vectors are loaded once and reused across out_x.
 inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
                            const uint8_t* lshift, const int32_t* multiplier,
                            const uint8_t* rshift, int32_t out_offset,
@@ -70,26 +76,38 @@ inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
     const vuint8m2_t rsh8 = __riscv_vle8_v_u8m2(&rshift[out_ch], vl);
     const vuint32m8_t lsh32 = __riscv_vzext_vf4_u32m8(lsh8, vl);
     const vuint32m8_t rsh32 = __riscv_vzext_vf4_u32m8(rsh8, vl);
-    for (int out_x = 0; out_x < out_w; ++out_x) {
-      vint32m8_t acc = __riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl);
-      // Apply bias
-      acc = __riscv_vadd_vv_i32m8(acc, bias_val, vl);
-      // int8 uses left shift BEFORE multiplier
-      acc = __riscv_vsll_vv_i32m8(acc, lsh32, vl);
-      acc = __riscv_vsmul_vv_i32m8(acc, mul_val, vxrm, vl);
-      // int8 uses rounding right shift
-      acc = __riscv_vssra_vv_i32m8(acc, rsh32, vxrm, vl);
-      // Apply offset
-      acc = __riscv_vadd_vx_i32m8(acc, out_offset, vl);
-      // Narrow down, saturating
-      const vint16m4_t out16 = __riscv_vnclip_wx_i16m4(acc, 0, vxrm, vl);
-      vint8m2_t out8 = __riscv_vnclip_wx_i8m2(out16, 0, vxrm, vl);
-      // Apply clamping
-      out8 = __riscv_vmax_vx_i8m2(out8, out_min, vl);
-      out8 = __riscv_vmin_vx_i8m2(out8, out_max, vl);
-      // Write out
-      __riscv_vse8_v_i8m2(&out_data[out_x * out_d + out_ch], out8, vl);
+
+    // Helper: quantize one acc vector and write vl bytes.
+    auto quant_store = [&](const vint32m8_t& acc, int8_t* dst) {
+      vint32m8_t a = __riscv_vadd_vv_i32m8(acc, bias_val, vl);
+      a = __riscv_vsll_vv_i32m8(a, lsh32, vl);
+      a = __riscv_vsmul_vv_i32m8(a, mul_val, vxrm, vl);
+      a = __riscv_vssra_vv_i32m8(a, rsh32, vxrm, vl);
+      a = __riscv_vadd_vx_i32m8(a, out_offset, vl);
+      const vint16m4_t a16 = __riscv_vnclip_wx_i16m4(a, 0, vxrm, vl);
+      vint8m2_t a8 = __riscv_vnclip_wx_i8m2(a16, 0, vxrm, vl);
+      a8 = __riscv_vmax_vx_i8m2(a8, out_min, vl);
+      a8 = __riscv_vmin_vx_i8m2(a8, out_max, vl);
+      __riscv_vse8_v_i8m2(dst, a8, vl);
+    };
+
+    int out_x = 0;
+    // 4-pixel unrolled loop: reduces branch/loop overhead by 4x.
+    for (; out_x + 3 < out_w; out_x += 4) {
+      quant_store(__riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl),
+                  &out_data[out_x * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 1) * out_d + out_ch], vl),
+                  &out_data[(out_x + 1) * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 2) * out_d + out_ch], vl),
+                  &out_data[(out_x + 2) * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 3) * out_d + out_ch], vl),
+                  &out_data[(out_x + 3) * out_d + out_ch]);
     }
+    for (; out_x < out_w; ++out_x) {
+      quant_store(__riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl),
+                  &out_data[out_x * out_d + out_ch]);
+    }
+
     out_ch += vl;
     out_ch_rem -= vl;
   }
