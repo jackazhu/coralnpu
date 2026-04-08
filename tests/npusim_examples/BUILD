@@ -17,6 +17,32 @@ load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
 load("//rules:utils.bzl", "generate_cc_arrays")
 
 py_binary(
+    name = "npusim_profile_mobilenet",
+    srcs = ["npusim_profile_mobilenet.py"],
+    data = [
+        ":run_full_mobilenet_v1_profile_binary",
+    ],
+    deps = [
+        "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
+        "@bazel_tools//tools/python/runfiles",
+        requirement("numpy"),
+    ],
+)
+
+py_binary(
+    name = "npusim_profile_bcresnet",
+    srcs = ["npusim_profile_bcresnet.py"],
+    data = [
+        ":run_bcresnet_profile_binary",
+    ],
+    deps = [
+        "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
+        "@bazel_tools//tools/python/runfiles",
+        requirement("numpy"),
+    ],
+)
+
+py_binary(
     name = "npusim_run_mobilenet",
     srcs = ["npusim_run_mobilenet.py"],
     data = [
@@ -78,6 +104,49 @@ coralnpu_v2_binary(
         "//sw/opt:rvv_opt",
         "//sw/opt/litert-micro:conv",
         "//sw/opt/litert-micro:depthwise_conv",
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+coralnpu_v2_binary(
+    name = "run_full_mobilenet_v1_profile_binary",
+    srcs = [
+        "run_full_mobilenet_v1.cc",
+    ],
+    dtcm_size_kbytes = 1024,
+    itcm_size_kbytes = 1024,
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sw/opt:rvv_opt",
+        "//sw/opt/litert-micro:conv_profile",
+        "//sw/opt/litert-micro:depthwise_conv_profile",
+        "//tests/cocotb/tutorial/tfmicro:mobilenet_v1_025_224_int8_dummy_lib",
+        "@tflite_micro//tensorflow/lite/micro:micro_framework",
+        "@tflite_micro//tensorflow/lite/micro:micro_log",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro:system_setup",
+    ],
+)
+
+coralnpu_v2_binary(
+    name = "run_bcresnet_profile_binary",
+    srcs = [
+        "bcresnet_sc35_int8_tflite_cc",
+        "run_bcresnet.cc",
+    ],
+    hdrs = ["bcresnet_sc35_int8_tflite.h"],
+    dtcm_size_kbytes = 1024,
+    itcm_size_kbytes = 1024,
+    semihosting = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//sw/opt:rvv_opt",
+        "//sw/opt/litert-micro:conv_profile",
+        "//sw/opt/litert-micro:depthwise_conv_profile",
         "@tflite_micro//tensorflow/lite/micro:micro_framework",
         "@tflite_micro//tensorflow/lite/micro:micro_log",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",

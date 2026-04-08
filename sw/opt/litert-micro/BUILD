@@ -17,6 +17,12 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "op_profiler",
+    hdrs = ["op_profiler.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+)
+
+cc_library(
     name = "memory_util",
     hdrs = ["memory_util.h"],
     target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
@@ -42,8 +48,26 @@ cc_library(
     hdrs = ["depthwise_conv.h"],
     target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
     deps = [
-        ":memory_util",
         ":accumulator_util",
+        ":memory_util",
+        ":op_profiler",
+        "//sw/opt:rvv_opt",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+    ],
+)
+
+cc_library(
+    name = "depthwise_conv_profile",
+    srcs = [
+        "depthwise_conv.cc",
+    ],
+    hdrs = ["depthwise_conv.h"],
+    defines = ["CORALNPU_OP_PROFILE=1"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        ":accumulator_util",
+        ":memory_util",
+        ":op_profiler",
         "//sw/opt:rvv_opt",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",
     ],
@@ -59,6 +83,25 @@ cc_library(
     deps = [
         ":accumulator_util",
         ":memory_util",
+        ":op_profiler",
+        "//sw/opt:rvv_opt",
+        "@tflite_micro//tensorflow/lite/kernels/internal:common",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+    ],
+)
+
+cc_library(
+    name = "conv_profile",
+    srcs = [
+        "conv.cc",
+    ],
+    hdrs = ["conv.h"],
+    defines = ["CORALNPU_OP_PROFILE=1"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        ":accumulator_util",
+        ":memory_util",
+        ":op_profiler",
         "//sw/opt:rvv_opt",
         "@tflite_micro//tensorflow/lite/kernels/internal:common",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",

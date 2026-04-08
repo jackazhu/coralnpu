@@ -23,6 +23,7 @@
 
 #include "sw/opt/litert-micro/accumulator_util.h"
 #include "sw/opt/litert-micro/memory_util.h"
+#include "sw/opt/litert-micro/op_profiler.h"
 #include "sw/opt/rvv_opt.h"
 #include "tensorflow/lite/kernels/internal/common.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/conv.h"
@@ -2559,13 +2560,22 @@ TfLiteStatus ConvEval(TfLiteContext* context, TfLiteNode* node) {
     case kTfLiteInt8: {
       switch (filter->type) {
         case kTfLiteInt8: {
+          OP_PROFILE_BEGIN(conv2d);
+          const tflite::RuntimeShape in_sh = GetTensorShape(input);
+          const tflite::RuntimeShape f_sh = GetTensorShape(filter);
+          const tflite::RuntimeShape out_sh = GetTensorShape(output);
           ConvPerChannel(
               tflite::ConvParamsQuantized(params, data), data,
               data.per_channel_output_multiplier, data.per_channel_output_shift,
-              context, GetTensorShape(input), GetTensorData<int8_t>(input),
-              GetTensorShape(filter), GetTensorData<int8_t>(filter),
+              context, in_sh, GetTensorData<int8_t>(input),
+              f_sh, GetTensorData<int8_t>(filter),
               GetTensorShape(bias), GetOptionalTensorData<int32_t>(bias),
-              GetTensorShape(output), GetTensorData<int8_t>(output));
+              out_sh, GetTensorData<int8_t>(output));
+          OP_PROFILE_END(conv2d,
+              "ih=%d iw=%d id=%d fh=%d fw=%d od=%d oh=%d ow=%d",
+              (int)in_sh.Dims(1), (int)in_sh.Dims(2), (int)in_sh.Dims(3),
+              (int)f_sh.Dims(1), (int)f_sh.Dims(2), (int)f_sh.Dims(0),
+              (int)out_sh.Dims(1), (int)out_sh.Dims(2));
           break;
         }
         default:

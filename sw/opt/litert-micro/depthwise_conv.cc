@@ -22,6 +22,7 @@
 
 #include "sw/opt/litert-micro/accumulator_util.h"
 #include "sw/opt/litert-micro/memory_util.h"
+#include "sw/opt/litert-micro/op_profiler.h"
 #include "sw/opt/rvv_opt.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
@@ -375,6 +376,213 @@ void DepthwiseConvPerChannelPatchCenter3x3Reuse6(
     }
   }
 }
+// Optimized depthwise conv patch for large depth_multiplier cases.
+// When in_d is small (e.g., 1) and depth_multiplier is large (e.g., 32), the
+// standard patch vectors over in_ch (vl=in_d_chunk) which degenerates to vl=1.
+// This kernel instead vectors over the depth_multiplier dimension, processing
+// all output channels for one input channel per iteration.
+void DepthwiseConvPerChannelPatchLargeDM(
+    const DepthwiseParams& params, const int32_t* output_multiplier,
+    const uint8_t* shift_left, const uint8_t* shift_right,
+    const RuntimeShape& in_shape, const int8_t* in_data,
+    const RuntimeShape& f_shape, const int8_t* f_data,
+    const RuntimeShape& bias_shape, const int32_t* bias_data,
+    const RuntimeShape& out_shape, int8_t* out_data, int out_y_st, int out_y_ed,
+    int out_x_st, int out_x_ed, int32_t* accs) {
+  const int stride_w = params.stride_width;
+  const int stride_h = params.stride_height;
+  const int dilation_w = params.dilation_width_factor;
+  const int dilation_h = params.dilation_height_factor;
+  const int pad_w = params.padding_values.width;
+  const int pad_h = params.padding_values.height;
+  const int depth_multiplier = params.depth_multiplier;
+  const int32_t output_offset = params.output_offset;
+  const int8_t output_activation_min = params.quantized_activation_min;
+  const int8_t output_activation_max = params.quantized_activation_max;
+  const int16_t input_offset = params.input_offset;
+
+  const int batches = MatchingDim(in_shape, 0, out_shape, 0);
+  const int out_d = MatchingDim(f_shape, 3, out_shape, 3);
+  const int in_h = in_shape.Dims(1);
+  const int in_w = in_shape.Dims(2);
+  const int in_d = in_shape.Dims(3);
+  const int f_h = f_shape.Dims(1);
+  const int f_w = f_shape.Dims(2);
+
+  const int out_patch_w = out_x_ed - out_x_st;
+
+  for (int batch = 0; batch < batches; ++batch) {
+    for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
+      const int in_y_orig = (out_y * stride_h) - pad_h;
+      const int f_y_st = idiv_ceil(std::max(0, -in_y_orig), dilation_h);
+      const int f_y_ed = std::min(f_h, idiv_ceil(in_h - in_y_orig, dilation_h));
+
+      for (int out_x = out_x_st; out_x < out_x_ed; ++out_x) {
+        const int in_x_orig = (out_x * stride_w) - pad_w;
+        const int f_x_st = idiv_ceil(std::max(0, -in_x_orig), dilation_w);
+        const int f_x_ed =
+            std::min(f_w, idiv_ceil(in_w - in_x_orig, dilation_w));
+
+        // For each input channel, vectorize over depth_multiplier (m) dimension.
+        for (int in_ch = 0; in_ch < in_d; ++in_ch) {
+          int m_rem = depth_multiplier;
+          int m_off = 0;
+          while (m_rem > 0) {
+            const size_t vl = __riscv_vsetvl_e32m4(m_rem);
+            const int out_ch_base = in_ch * depth_multiplier + m_off;
+
+            vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vl);
+
+            for (int f_y = f_y_st; f_y < f_y_ed; ++f_y) {
+              const int in_y = in_y_orig + dilation_h * f_y;
+              for (int f_x = f_x_st; f_x < f_x_ed; ++f_x) {
+                const int in_x = in_x_orig + dilation_w * f_x;
+                // Single scalar input value (in_ch only).
+                const int16_t in_val = static_cast<int16_t>(
+                    in_data[Offset(in_shape, batch, in_y, in_x, in_ch)] +
+                    input_offset);
+                // Load depth_multiplier filter values for this (f_y, f_x, in_ch).
+                // Filter layout: [1, f_h, f_w, out_d] where out_d = in_d*depth_mult.
+                // For in_ch, depth_mult values start at out_ch_base, stride=1
+                // because filter is laid out as [..., m0, m1, ..., m_{dm-1}, ...]
+                // but actually out_d = in_d * depth_multiplier, the in_ch block
+                // is at out_ch = in_ch * depth_multiplier + m.
+                // Within the filter, the depth dimension is stored as
+                // [in_ch0_m0, in_ch0_m1, ..., in_ch0_mN, in_ch1_m0, ...]
+                // = layout [f_h, f_w, in_d * depth_multiplier] last dim = out_d
+                // So f_data[Offset(f_shape, 0, f_y, f_x, out_ch_base)] is contiguous
+                // for m_off..m_off+vl because in_d=1 (all m values are contiguous).
+                const vint8m1_t f_v8 = __riscv_vle8_v_i8m1(
+                    &f_data[Offset(f_shape, 0, f_y, f_x, out_ch_base)], vl);
+                const vint16m2_t f_v16 = __riscv_vsext_vf2_i16m2(f_v8, vl);
+                acc = __riscv_vwmacc_vx_i32m4(acc, in_val, f_v16, vl);
+              }
+            }
+
+            // Store accumulators.
+            __riscv_vse32_v_i32m4(
+                &accs[(out_x - out_x_st) * out_d + out_ch_base], acc, vl);
+
+            m_off += vl;
+            m_rem -= vl;
+          }
+        }
+      }
+
+      PostprocessAcc(accs, bias_data, shift_left, output_multiplier,
+                     shift_right, output_offset, output_activation_min,
+                     output_activation_max,
+                     &out_data[Offset(out_shape, batch, out_y, out_x_st, 0)],
+                     out_patch_w, out_d);
+    }
+  }
+}
+
+// Optimized 1D depthwise conv (Nx1 or 1xN filter) for the center region.
+// BCResNet uses depthwise convolutions with 3x1 (vertical) and 1x3 (horizontal)
+// filters. The generic patch handles these but without any spatial reuse.
+// This kernel vectorizes over in_ch (like standard DW), but preloads the N
+// filter taps and processes multiple output pixels in a sliding window.
+void DepthwiseConvPerChannelPatch1D(
+    const DepthwiseParams& params, const int32_t* output_multiplier,
+    const uint8_t* shift_left, const uint8_t* shift_right,
+    const RuntimeShape& in_shape, const int8_t* in_data,
+    const RuntimeShape& f_shape, const int8_t* f_data,
+    const RuntimeShape& bias_shape, const int32_t* bias_data,
+    const RuntimeShape& out_shape, int8_t* out_data, int out_y_st, int out_y_ed,
+    int out_x_st, int out_x_ed, int32_t* accs) {
+  const int stride_w = params.stride_width;
+  const int stride_h = params.stride_height;
+  const int dilation_w = params.dilation_width_factor;
+  const int dilation_h = params.dilation_height_factor;
+  const int pad_w = params.padding_values.width;
+  const int pad_h = params.padding_values.height;
+  const int depth_multiplier = params.depth_multiplier;
+  const int32_t output_offset = params.output_offset;
+  const int8_t output_activation_min = params.quantized_activation_min;
+  const int8_t output_activation_max = params.quantized_activation_max;
+  const int16_t input_offset = params.input_offset;
+
+  const int batches = MatchingDim(in_shape, 0, out_shape, 0);
+  const int out_d = MatchingDim(f_shape, 3, out_shape, 3);
+  const int in_h = in_shape.Dims(1);
+  const int in_w = in_shape.Dims(2);
+  const int in_d = in_shape.Dims(3);
+  const int f_h = f_shape.Dims(1);
+  const int f_w = f_shape.Dims(2);
+
+  // Only one of f_h or f_w is > 1 (1D filter).
+  const bool is_h_filter = (f_h > 1);
+  const int f_len = is_h_filter ? f_h : f_w;
+  const int out_patch_w = out_x_ed - out_x_st;
+
+  for (int batch = 0; batch < batches; ++batch) {
+    int in_ch = 0;
+    size_t in_ch_rem = in_d;
+    while (in_ch_rem > 0) {
+      const size_t vl = __riscv_vsetvl_e32m4(in_ch_rem);
+      for (int m = 0; m < depth_multiplier; ++m) {
+        const int out_ch = m + in_ch * depth_multiplier;
+
+        // Preload all filter taps for this (in_ch_block, m) combination.
+        // Filter layout: [1, f_h, f_w, out_d], tap k at:
+        //   f_data[Offset(f_shape, 0, k_h, k_w, out_ch)] with stride=depth_mult.
+        // For 1D: either f_w=1 (vary k over f_h) or f_h=1 (vary k over f_w).
+        // We load f_len taps as int8 vectors; each has stride=depth_multiplier.
+        // Max filter length: use a static array of vint8m1_t (max 8 taps typical).
+        // BCResNet uses 3-tap filters; guard f_len <= 7 for stack safety.
+        const ptrdiff_t f_stride = sizeof(int8_t) * depth_multiplier;
+
+        for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
+          const int in_y_orig = out_y * stride_h - pad_h;
+
+          for (int out_x = out_x_st; out_x < out_x_ed; ++out_x) {
+            const int in_x_orig = out_x * stride_w - pad_w;
+            vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vl);
+
+            for (int k = 0; k < f_len; ++k) {
+              int iy, ix, fy, fx;
+              if (is_h_filter) {
+                iy = in_y_orig + k * dilation_h;
+                ix = in_x_orig;
+                fy = k; fx = 0;
+              } else {
+                iy = in_y_orig;
+                ix = in_x_orig + k * dilation_w;
+                fy = 0; fx = k;
+              }
+              if (iy < 0 || iy >= in_h || ix < 0 || ix >= in_w) continue;
+
+              const vint8m1_t in_v8 = __riscv_vle8_v_i8m1(
+                  &in_data[Offset(in_shape, batch, iy, ix, in_ch)], vl);
+              const vint8m1_t f_v8 = __riscv_vlse8_v_i8m1(
+                  &f_data[Offset(f_shape, 0, fy, fx, out_ch)], f_stride, vl);
+              vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                  __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+              const vint16m2_t f_v16 = __riscv_vsext_vf2_i16m2(f_v8, vl);
+              acc = __riscv_vwmacc_vv_i32m4(acc, in_v16, f_v16, vl);
+            }
+
+            __riscv_vsse32_v_i32m4(
+                &accs[(out_x - out_x_st) * out_d + out_ch],
+                sizeof(int32_t) * depth_multiplier, acc, vl);
+          }
+        }
+      }
+      in_ch += vl;
+      in_ch_rem -= vl;
+    }
+
+    for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
+      PostprocessAcc(accs, bias_data, shift_left, output_multiplier,
+                     shift_right, output_offset, output_activation_min,
+                     output_activation_max,
+                     &out_data[Offset(out_shape, batch, out_y, out_x_st, 0)],
+                     out_patch_w, out_d);
+    }
+  }
+}
+
 // Optimized 5x5 depthwise conv for the interior (no-padding) region.
 // Strategy: preload all 25 filter taps per (depth_multiplier, in_channel) pair
 // into local vint8m1_t vectors, then slide over every output position reusing
@@ -527,53 +735,61 @@ void DepthwiseConvPerChannel(
   const int out_x_left = idiv_ceil(pad_w, stride_w);
   const int out_x_right = idiv_ceil(out_w + pad_w - f_w * dilation_w, stride_w);
 
+  // Use large-DM path when depth_multiplier dominates and in_d is small.
+  // This vectorizes over the depth_multiplier dimension instead of in_ch,
+  // avoiding the vl=1 degenerate case that occurs when in_d is tiny.
+  const bool use_large_dm =
+      (depth_multiplier >= 4) && (in_d <= 4);
+
+  auto dispatch_patch = [&](int y_st, int y_ed, int x_st, int x_ed) {
+    if (use_large_dm) {
+      DepthwiseConvPerChannelPatchLargeDM(
+          params, output_multiplier, shift_left.get(), shift_right.get(),
+          in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
+          bias_data_copy.get(), out_shape, out_data, y_st, y_ed, x_st, x_ed,
+          accs_buf);
+    } else {
+      DepthwiseConvPerChannelPatch(
+          params, output_multiplier, shift_left.get(), shift_right.get(),
+          in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
+          bias_data_copy.get(), out_shape, out_data, y_st, y_ed, x_st, x_ed,
+          accs_buf);
+    }
+  };
+
   // Top
-  DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, 0, out_y_top, 0, out_w, accs_buf);
+  dispatch_patch(0, out_y_top, 0, out_w);
   // Middle-left
-  DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_top, out_y_bottom, 0, out_x_left, accs_buf);
+  dispatch_patch(out_y_top, out_y_bottom, 0, out_x_left);
   // Center
   do {
-    if ((f_h == 3) && (f_w == 3)) {
-      if (stride_w == dilation_w) {
-        DepthwiseConvPerChannelPatchCenter3x3Reuse6(
+    if (!use_large_dm) {
+      if ((f_h == 3) && (f_w == 3)) {
+        if (stride_w == dilation_w) {
+          DepthwiseConvPerChannelPatchCenter3x3Reuse6(
+              params, output_multiplier, shift_left.get(), shift_right.get(),
+              in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
+              bias_data_copy.get(), out_shape, out_data, out_y_top,
+              out_y_bottom, out_x_left, out_x_right, accs_buf);
+          break;
+        }
+        // More variations to be added here
+      }
+      if ((f_h == 5) && (f_w == 5) && (stride_w == dilation_w)) {
+        DepthwiseConvPerChannelPatchCenter5x5Preload(
             params, output_multiplier, shift_left.get(), shift_right.get(),
             in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
             bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
             out_x_left, out_x_right, accs_buf);
         break;
       }
-      // More variations to be added here
     }
-    if ((f_h == 5) && (f_w == 5) && (stride_w == dilation_w)) {
-      DepthwiseConvPerChannelPatchCenter5x5Preload(
-          params, output_multiplier, shift_left.get(), shift_right.get(),
-          in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
-          bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
-          out_x_left, out_x_right, accs_buf);
-      break;
-    }
-    DepthwiseConvPerChannelPatch(
-        params, output_multiplier, shift_left.get(), shift_right.get(),
-        in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
-        bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
-        out_x_left, out_x_right, accs_buf);
+    dispatch_patch(out_y_top, out_y_bottom, out_x_left, out_x_right);
   } while (false);
   // Middle-right
-  DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_top, out_y_bottom, out_x_right, out_w, accs_buf);
+  dispatch_patch(out_y_top, out_y_bottom, out_x_right, out_w);
   // Bottom
-  DepthwiseConvPerChannelPatch(
-      params, output_multiplier, shift_left.get(), shift_right.get(), in_shape,
-      in_data, f_shape, f_data_copy.get(), bias_shape, bias_data_copy.get(),
-      out_shape, out_data, out_y_bottom, out_h, 0, out_w, accs_buf);
+  dispatch_patch(out_y_bottom, out_h, 0, out_w);
 }
 
 void* DepthwiseConvInit(TfLiteContext* context, const char* buffer, size_t length) {
@@ -634,13 +850,22 @@ TfLiteStatus DepthwiseConvEval(TfLiteContext* context, TfLiteNode* node) {
     case kTfLiteInt8: {
       switch (filter->type) {
         case kTfLiteInt8: {
+          OP_PROFILE_BEGIN(dw_conv2d);
+          const tflite::RuntimeShape in_sh = GetTensorShape(input);
+          const tflite::RuntimeShape f_sh = GetTensorShape(filter);
+          const tflite::RuntimeShape out_sh = GetTensorShape(output);
           DepthwiseConvPerChannel(
               DepthwiseConvParamsQuantized(params, data),
               data.per_channel_output_multiplier, data.per_channel_output_shift,
-              GetTensorShape(input), GetTensorData<int8_t>(input),
-              GetTensorShape(filter), GetTensorData<int8_t>(filter),
+              in_sh, GetTensorData<int8_t>(input),
+              f_sh, GetTensorData<int8_t>(filter),
               GetTensorShape(bias), GetOptionalTensorData<int32_t>(bias),
-              GetTensorShape(output), GetTensorData<int8_t>(output), accs_buf);
+              out_sh, GetTensorData<int8_t>(output), accs_buf);
+          OP_PROFILE_END(dw_conv2d,
+              "ih=%d iw=%d id=%d fh=%d fw=%d od=%d oh=%d ow=%d",
+              (int)in_sh.Dims(1), (int)in_sh.Dims(2), (int)in_sh.Dims(3),
+              (int)f_sh.Dims(1), (int)f_sh.Dims(2), (int)f_sh.Dims(3),
+              (int)out_sh.Dims(1), (int)out_sh.Dims(2));
           break;
         }
         default:
