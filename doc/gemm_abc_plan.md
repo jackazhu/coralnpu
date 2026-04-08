@@ -136,9 +136,10 @@
   - benchmark 对照
   - 风险与下一步
 
-## 8. 当前进展快照（2026-04-07）
+## 8. 当前进展快照（2026-04-08）
 - 里程碑状态：`M0/M1/M2` 已完成，`M3` 进行中。
-- C 阶段状态：已完成 `C1~C7`，其中 `C4/C5/C6` 聚焦网络级热点（1x1、grouped-1x1、grouped-5x5）。
-- 当前网络周期（最新一轮 C6）：`npusim_mobilenet=204339890`，`npusim_bcresnet=282055557`。
-- 风险控制状态：近期多轮“无收益/错误方向”尝试均已回退；仅保留通过正确性回归且网络收益成立的改动。
-- 后续重点：继续推进 custom GEMM 真指令语义闭环（mpact/simulator/toolchain 助记符级支持）并保持与网络热点优化并行推进。
+- C 阶段状态：已完成 `C1~C8`，其中 `C4/C5/C6` 聚焦网络级热点（1x1、grouped-1x1、grouped-5x5），`C8` 聚焦 1x1/3x3/DW-5x5 的空间分块优化。
+- 当前网络周期（C8 完成后）：`npusim_mobilenet=31840506`，`npusim_bcresnet=254941208`。
+- 累积改善（相对 A 阶段基线 mobilenet=516177367）：`-93.8%`；相对 C7 基线（mobilenet=40017353）：`-20.4%`。
+- 风险控制状态：C8 三项优化均通过完整验证矩阵（conv_sim_test + rvv_ml_ops + rvv_arithmetic + rvv_load_store + highmem + itcm512 + 端到端），无功能回退。
+- 后续重点：(1) 继续推进 custom GEMM 真指令语义闭环（mpact/simulator/toolchain 助记符级支持）；(2) 探索 BCResNet 的进一步优化方向（当前 254941208 cycles）。

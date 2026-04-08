@@ -375,6 +375,100 @@ void DepthwiseConvPerChannelPatchCenter3x3Reuse6(
     }
   }
 }
+// Optimized 5x5 depthwise conv for the interior (no-padding) region.
+// Strategy: preload all 25 filter taps per (depth_multiplier, in_channel) pair
+// into local vint8m1_t vectors, then slide over every output position reusing
+// those preloaded filters. This mirrors the 3x3 Reuse6 approach.
+// Restriction: stride_w == dilation_w (same as 3x3 kernel).
+void DepthwiseConvPerChannelPatchCenter5x5Preload(
+    const DepthwiseParams& params, const int32_t* output_multiplier,
+    const uint8_t* shift_left, const uint8_t* shift_right,
+    const RuntimeShape& in_shape, const int8_t* in_data,
+    const RuntimeShape& f_shape, const int8_t* f_data,
+    const RuntimeShape& bias_shape, const int32_t* bias_data,
+    const RuntimeShape& out_shape, int8_t* out_data, int out_y_st, int out_y_ed,
+    int out_x_st, int out_x_ed, int32_t* accs) {
+  const int stride_w = params.stride_width;
+  const int stride_h = params.stride_height;
+  const int dilation_w = params.dilation_width_factor;
+  const int dilation_h = params.dilation_height_factor;
+  const int pad_w = params.padding_values.width;
+  const int pad_h = params.padding_values.height;
+  const int depth_multiplier = params.depth_multiplier;
+  const int32_t output_offset = params.output_offset;
+  const int8_t output_activation_min = params.quantized_activation_min;
+  const int8_t output_activation_max = params.quantized_activation_max;
+  const int16_t input_offset = params.input_offset;
+
+  TFLITE_DCHECK_LE(output_activation_min, output_activation_max);
+  TFLITE_DCHECK_LE(stride_w, dilation_w);
+
+  const int batches = MatchingDim(in_shape, 0, out_shape, 0);
+  const int out_d = MatchingDim(f_shape, 3, out_shape, 3);
+  const int in_d = in_shape.Dims(3);
+  const int out_patch_h = out_y_ed - out_y_st;
+  const int out_patch_w = out_x_ed - out_x_st;
+  const int32_t acc_shape_[] = {1, out_patch_h, out_patch_w, out_d};
+  const tflite::RuntimeShape acc_shape(4, acc_shape_);
+
+  for (int batch = 0; batch < batches; ++batch) {
+    int in_ch = 0;
+    size_t in_ch_rem = in_d;
+    while (in_ch_rem > 0) {
+      // Use m4 to match the vwmacc m2*m2->m4 convention (same as 3x3 kernel).
+      const size_t vl = __riscv_vsetvl_e32m4(in_ch_rem);
+      for (int m = 0; m < depth_multiplier; ++m) {
+        const int out_ch = m + in_ch * depth_multiplier;
+
+        // Precompute base pointer and stride for the 25 filter taps so that
+        // the inner loop only does a strided scalar load (no array of vectors).
+        // The filter layout is [1, f_h, f_w, out_d], so tap (fy, fx) starts at
+        // f_data + Offset(f_shape, 0, fy, fx, out_ch).
+        const ptrdiff_t f_stride = sizeof(int8_t) * depth_multiplier;
+
+        for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
+          const int in_y0 = out_y * stride_h - pad_h;
+
+          for (int out_x = out_x_st; out_x < out_x_ed; ++out_x) {
+            const int in_x = out_x * stride_w - pad_w;
+            vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vl);
+
+            for (int fy = 0; fy < 5; ++fy) {
+              const int iy = in_y0 + fy * dilation_h;
+              for (int fx = 0; fx < 5; ++fx) {
+                const int ix = in_x + fx * dilation_w;
+                const vint8m1_t in_v8 = __riscv_vle8_v_i8m1(
+                    &in_data[Offset(in_shape, batch, iy, ix, in_ch)], vl);
+                // Preloaded filter tap via strided load for this (fy, fx).
+                const vint8m1_t f_v8 = __riscv_vlse8_v_i8m1(
+                    &f_data[Offset(f_shape, 0, fy, fx, out_ch)], f_stride, vl);
+                vint16m2_t in_v16 = __riscv_vadd_vx_i16m2(
+                    __riscv_vsext_vf2_i16m2(in_v8, vl), input_offset, vl);
+                const vint16m2_t f_v16 = __riscv_vsext_vf2_i16m2(f_v8, vl);
+                acc = __riscv_vwmacc_vv_i32m4(acc, in_v16, f_v16, vl);
+              }
+            }
+
+            __riscv_vsse32_v_i32m4(
+                &accs[Offset(acc_shape, 0, out_y - out_y_st, out_x - out_x_st,
+                             out_ch)],
+                sizeof(int32_t) * depth_multiplier, acc, vl);
+          }
+        }
+      }
+      in_ch += vl;
+      in_ch_rem -= vl;
+    }
+
+    for (int out_y = out_y_st; out_y < out_y_ed; ++out_y) {
+      PostprocessAcc(&accs[Offset(acc_shape, 0, out_y - out_y_st, 0, 0)],
+                     bias_data, shift_left, output_multiplier, shift_right,
+                     output_offset, output_activation_min, output_activation_max,
+                     &out_data[Offset(out_shape, batch, out_y, out_x_st, 0)],
+                     out_patch_w, out_d);
+    }
+  }
+}
 }  // namespace
 
 void DepthwiseConvPerChannel(
@@ -455,6 +549,14 @@ void DepthwiseConvPerChannel(
         break;
       }
       // More variations to be added here
+    }
+    if ((f_h == 5) && (f_w == 5) && (stride_w == dilation_w)) {
+      DepthwiseConvPerChannelPatchCenter5x5Preload(
+          params, output_multiplier, shift_left.get(), shift_right.get(),
+          in_shape, in_data, f_shape, f_data_copy.get(), bias_shape,
+          bias_data_copy.get(), out_shape, out_data, out_y_top, out_y_bottom,
+          out_x_left, out_x_right, accs_buf);
+      break;
     }
     DepthwiseConvPerChannelPatch(
         params, output_multiplier, shift_left.get(), shift_right.get(),
