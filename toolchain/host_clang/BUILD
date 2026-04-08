@@ -43,8 +43,8 @@ cc_toolchain_config(
     ],
     compiler = "clang",
     cpu = "k8",
-    # We still need standard includes, reusing local_config_cc's might be risky if it's GCC specific,
-    # but Clang usually plays nice with GCC headers.
+    # Host include directories must match the actual toolchain available in
+    # the VM image. This environment uses GCC 13 and Clang 18.
     cxx_builtin_include_directories = [
         "/usr/include/c++/13",
         "/usr/include/x86_64-linux-gnu/c++/13",

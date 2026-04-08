@@ -25,8 +25,7 @@ def run_bcresnet():
         "coralnpu_hw/tests/npusim_examples/run_bcresnet_binary.elf"
     )
     entry_point, symbol_map = npu_sim.get_elf_entry_and_symbol(
-        elf_file,
-        ["inference_status", "inference_input", "inference_output"],
+        elf_file, ["inference_status", "inference_input", "inference_output"]
     )
     npu_sim.load_program(elf_file, entry_point)
 

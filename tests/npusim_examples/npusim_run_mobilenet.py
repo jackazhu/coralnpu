@@ -21,7 +21,6 @@ def run_full_mobilenet():
     npu_sim = CoralNPUV2Simulator(highmem_ld=True, exit_on_ebreak=True)
     r = runfiles.Create()
     elf_file = r.Rlocation('coralnpu_hw/tests/npusim_examples/run_full_mobilenet_v1_binary.elf')
-
     entry_point, symbol_map = npu_sim.get_elf_entry_and_symbol(elf_file, ['inference_status', 'inference_input', 'inference_output'])
     npu_sim.load_program(elf_file, entry_point)
 
