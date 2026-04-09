@@ -28,6 +28,44 @@
 #endif  // TFLITE_SINGLE_ROUNDING
 
 namespace coralnpu_v2::opt::litert_micro {
+
+// ---------------------------------------------------------------------------
+// Scalar bit-accurate MultiplyByQuantizedMultiplier (double-rounding).
+//
+// Matches gemmlowp exactly:
+//   SRDMH: nudge = (a*b >= 0) ? 2^30 : (1-2^30)  ← sign-dependent
+//   RDBPOT: threshold = (1<<(r-1)) - 1 + (x<0 ? 1 : 0)
+//
+// This is used by elementwise operators (ADD, MUL, SUM) where the
+// requantize parameters are uniform scalars across the operation.
+// ---------------------------------------------------------------------------
+inline int32_t MqmScalarInline(int32_t x, int32_t mult, int shift) {
+  const int ls = shift > 0 ? shift : 0;
+  const int rs = shift < 0 ? -shift : 0;
+  if (ls > 0) x = x << ls;
+  // SRDMH: sign-dependent nudge (round half away from zero)
+  {
+    const bool overflow = (x == std::numeric_limits<int32_t>::min() &&
+                           mult == std::numeric_limits<int32_t>::min());
+    const int64_t ab = (int64_t)x * mult;
+    const int32_t nudge = ab >= 0 ? (1 << 30) : (1 - (1 << 30));
+    x = overflow ? std::numeric_limits<int32_t>::max()
+                 : static_cast<int32_t>(
+                       std::min<int64_t>(
+                           std::max<int64_t>((ab + nudge) >> 31,
+                             std::numeric_limits<int32_t>::min()),
+                           std::numeric_limits<int32_t>::max()));
+  }
+  // RDBPOT: sign-dependent threshold
+  if (rs > 0) {
+    const int32_t mask = (1 << rs) - 1;
+    const int32_t remainder = x & mask;
+    const int32_t threshold = (mask >> 1) + (x < 0 ? 1 : 0);
+    x = (x >> rs) + (remainder > threshold ? 1 : 0);
+  }
+  return x;
+}
+
 inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
                                const int32_t* shift_in, int out_d) {
   int out_ch = 0;
@@ -50,7 +88,17 @@ inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
   }
 }
 
-// TODO(davidgao): use a param structure for reuse?
+// ---------------------------------------------------------------------------
+// PostprocessAcc: vectorized requantization using vsmul/vssra.
+//
+// Uses RVV vsmul (RNU rounding mode) which differs from gemmlowp's
+// SaturatingRoundingDoublingHighMul by at most ±1 LSB for negative products
+// at exact tie boundaries. This is acceptable for the Conv/DW post-processing
+// path (consistent with Phase A-C8 behavior).
+//
+// The elementwise operators (ADD, MUL, SUM) use MqmScalarInline instead for
+// bit-accuracy, since they are called fewer times and can afford scalar cost.
+// ---------------------------------------------------------------------------
 inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
                            const uint8_t* lshift, const int32_t* multiplier,
                            const uint8_t* rshift, int32_t out_offset,
@@ -70,26 +118,38 @@ inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
     const vuint8m2_t rsh8 = __riscv_vle8_v_u8m2(&rshift[out_ch], vl);
     const vuint32m8_t lsh32 = __riscv_vzext_vf4_u32m8(lsh8, vl);
     const vuint32m8_t rsh32 = __riscv_vzext_vf4_u32m8(rsh8, vl);
-    for (int out_x = 0; out_x < out_w; ++out_x) {
-      vint32m8_t acc = __riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl);
-      // Apply bias
-      acc = __riscv_vadd_vv_i32m8(acc, bias_val, vl);
-      // int8 uses left shift BEFORE multiplier
-      acc = __riscv_vsll_vv_i32m8(acc, lsh32, vl);
-      acc = __riscv_vsmul_vv_i32m8(acc, mul_val, vxrm, vl);
-      // int8 uses rounding right shift
-      acc = __riscv_vssra_vv_i32m8(acc, rsh32, vxrm, vl);
-      // Apply offset
-      acc = __riscv_vadd_vx_i32m8(acc, out_offset, vl);
-      // Narrow down, saturating
-      const vint16m4_t out16 = __riscv_vnclip_wx_i16m4(acc, 0, vxrm, vl);
-      vint8m2_t out8 = __riscv_vnclip_wx_i8m2(out16, 0, vxrm, vl);
-      // Apply clamping
-      out8 = __riscv_vmax_vx_i8m2(out8, out_min, vl);
-      out8 = __riscv_vmin_vx_i8m2(out8, out_max, vl);
-      // Write out
-      __riscv_vse8_v_i8m2(&out_data[out_x * out_d + out_ch], out8, vl);
+
+    // Helper: quantize one acc vector and write vl bytes.
+    auto quant_store = [&](const vint32m8_t& acc, int8_t* dst) {
+      vint32m8_t a = __riscv_vadd_vv_i32m8(acc, bias_val, vl);
+      a = __riscv_vsll_vv_i32m8(a, lsh32, vl);
+      a = __riscv_vsmul_vv_i32m8(a, mul_val, vxrm, vl);
+      a = __riscv_vssra_vv_i32m8(a, rsh32, vxrm, vl);
+      a = __riscv_vadd_vx_i32m8(a, out_offset, vl);
+      const vint16m4_t a16 = __riscv_vnclip_wx_i16m4(a, 0, vxrm, vl);
+      vint8m2_t a8 = __riscv_vnclip_wx_i8m2(a16, 0, vxrm, vl);
+      a8 = __riscv_vmax_vx_i8m2(a8, out_min, vl);
+      a8 = __riscv_vmin_vx_i8m2(a8, out_max, vl);
+      __riscv_vse8_v_i8m2(dst, a8, vl);
+    };
+
+    int out_x = 0;
+    // 4-pixel unrolled loop: reduces branch/loop overhead by 4x.
+    for (; out_x + 3 < out_w; out_x += 4) {
+      quant_store(__riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl),
+                  &out_data[out_x * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 1) * out_d + out_ch], vl),
+                  &out_data[(out_x + 1) * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 2) * out_d + out_ch], vl),
+                  &out_data[(out_x + 2) * out_d + out_ch]);
+      quant_store(__riscv_vle32_v_i32m8(&accs[(out_x + 3) * out_d + out_ch], vl),
+                  &out_data[(out_x + 3) * out_d + out_ch]);
     }
+    for (; out_x < out_w; ++out_x) {
+      quant_store(__riscv_vle32_v_i32m8(&accs[out_x * out_d + out_ch], vl),
+                  &out_data[out_x * out_d + out_ch]);
+    }
+
     out_ch += vl;
     out_ch_rem -= vl;
   }
@@ -101,24 +161,22 @@ inline void PostprocessAcc16(const int32_t* accs, const int32_t* bias_data,
                              int16_t out_min, int16_t out_max,
                              int16_t* out_data, int out_w, int out_d) {
   // Scalar post-processing to ensure absolute bit-exactness with TFLM.
-  // The user requested correctness over performance for this stage.
   for (int out_x = 0; out_x < out_w; ++out_x) {
     for (int c = 0; c < out_d; ++c) {
       int64_t acc = (int64_t)accs[out_x * out_d + c];
       if (bias_data) {
         acc += (int64_t)bias_data[c];
       }
-
       int shift = (int8_t)lshift[c] - (int8_t)rshift[c];
       int32_t result =
           tflite::MultiplyByQuantizedMultiplier(acc, multiplier[c], shift);
-
       result = std::max<int32_t>(result, out_min);
       result = std::min<int32_t>(result, out_max);
       out_data[out_x * out_d + c] = (int16_t)result;
     }
   }
 }
+
 }  // namespace coralnpu_v2::opt::litert_micro
 
 #endif  // SW_OPT_LITERT_MICRO_ACCUMULATOR_UTIL_H_

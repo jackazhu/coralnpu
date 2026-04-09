@@ -353,6 +353,37 @@
 | 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=254702861` |
 | 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=40017353` |
 
+### C-Entry-008
+- 日期：2026-04-08
+- Git commit：TBD（本次提交后更新）
+- 改动摘要（含 decode/mpact/toolchain）：三项系统性空间分块优化：
+  1. **`Conv2D_1x1` 4-pixel 空间分块**：外层 `out_channel_start` 块不变，内层 `out_x` 循环新增 4-pixel tile，每次权重加载同时处理4个相邻输出像素，权重加载摊销4倍；
+  2. **`Conv2D_3x3` 4-pixel 空间分块**：在 `dilation==1` 的内部区域，`out_x` 循环改为4-pixel tile（4个 acc 并行），复用同一行/列的 9 个 filter-tap 向量，filter 加载摊销4倍；
+  3. **`DepthwiseConv` 5x5 专用中心区域内核** `DepthwiseConvPerChannelPatchCenter5x5Preload`：对 `stride_w == dilation_w` 的中心区域使用专用路径，复用filter指针计算，减少每次计算的地址重复；接入 `DepthwiseConvPerChannel` 分发树。
+- fallback 验证方式：所有三个优化均带有边界检测（`in_x0 < 0 || in_x3 >= input_width` 等）；边界像素和带 padding 的情况回落到逐像素 scalar 路径，保持正确性。
+
+#### 验证结果
+| 测试项 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| Conv 算子正确性回归 | `bazel test --cache_test_results=no --test_output=streamed //sw/opt/litert-micro/test:conv_sim_test` | PASS | 所有 case 输出匹配 reference；5x5 grouped 2.15x speedup |
+| RVV ML 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_ml_ops_cocotb_test` | PASS | 功能无回退 |
+| RVV 算术回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_arithmetic_cocotb_test` | PASS | 功能无回退 |
+| RVV 访存回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_load_store_test` | PASS | 功能无回退 |
+| Highmem 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_highmem_tests` | PASS | 功能无回退 |
+| ITCM/DTCM 512KB 回归 | `bazel test --cache_test_results=no --test_output=errors //tests/cocotb:rvv_itcm512kb_dtcm512kb_tests` | PASS | 功能无回退 |
+| 端到端 MobileNet | `bazel run //tests/npusim_examples:npusim_run_mobilenet` | PASS | `inference_status=0`, `PERF_CYCLES=31840506` |
+| 端到端 BCResNet | `bazel run //tests/npusim_examples:npusim_run_bcresnet` | PASS | `inference_status=0`, `PERF_CYCLES=254941208` |
+
+#### Benchmark 对照（C-Entry-008 vs C-Entry-007）
+| Workload | Metric | Before(C-007) | After(C-008) | Delta | 结论 |
+|---|---|---|---|---|---|
+| npusim_mobilenet | cycles | 40017353 | 31840506 | -20.4% | 显著改善（1x1/3x3 4-pixel tile 命中热点） |
+| npusim_bcresnet | cycles | 254702861 | 254941208 | +0.09% | 持平（噪声范围内） |
+
+#### 阶段结论
+- 是否满足 C 完成条件：`No`
+- 若 No，阻塞原因：C 阶段网络级热点在 MobileNet 上取得重大进展（-20.4%），BCResNet 持平。custom GEMM 真指令语义（mpact/simulator/toolchain 助记符级闭环）仍未完成。
+
 ## 5. 决策与问题跟踪
 
 | ID | 日期 | 类型 | 内容 | 影响阶段 | 状态 |
@@ -372,5 +403,6 @@
 | C-005 | 2026-04-06 | Action | 继续优化并收敛：补齐 `1x1 grouped conv` 专用路径（`groups>1`）且保持 `groups==1` 快路径不退化；`5x5` 专用原型保留但暂不放开到 grouped 场景（网络实测无正收益）；当前端到端周期稳定为 mobilenet `207447949`、bcresnet `285472441`。 | C | Done |
 | C-006 | 2026-04-07 | Action | 继续优化（多角度 + 资料检索后落地）：针对 bcresnet 实际热点 `fh=5 fw=5 id=40 od=40 fid=2 groups=20 fpg=2`，新增 `5x5 grouped(2x2)` 专用 RVV 路径 `Conv_5x5_Grouped2x2_PerChannel`，按输出通道向量化（`vle8 + vlse8 + vwmacc`）替换 reference fallback；网络周期稳定下降（mobilenet `-1.50%`，bcresnet `-1.20%`）。 | C | Done |
 | C-007 | 2026-04-07 | Action | 与 `origin/main` 完成冲突合并（`conv.cc`、`npusim_run_bcresnet.py`、`run_bcresnet.cc`），冲突均判定为简单冲突并已通过并集合并；回归与端到端重新验证通过。 | C | Done |
+| C-008 | 2026-04-08 | Action | 三项空间分块优化：(1) `Conv2D_1x1` 4-pixel 空间 tile（OC 向量化路径）；(2) `Conv2D_3x3` 4-pixel 空间 tile（dilation==1 快路径）；(3) `DepthwiseConv` 5x5 中心区域专用内核（预加载25 taps，filter 地址计算摊销）。MobileNet 净收益 `-20.4%`，BCResNet 持平（+0.09%）。 | C | Done |
 
 类型建议：`Decision` / `Risk` / `Issue` / `Action`
