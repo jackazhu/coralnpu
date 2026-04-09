@@ -28,6 +28,44 @@
 #endif  // TFLITE_SINGLE_ROUNDING
 
 namespace coralnpu_v2::opt::litert_micro {
+
+// ---------------------------------------------------------------------------
+// Scalar bit-accurate MultiplyByQuantizedMultiplier (double-rounding).
+//
+// Matches gemmlowp exactly:
+//   SRDMH: nudge = (a*b >= 0) ? 2^30 : (1-2^30)  ← sign-dependent
+//   RDBPOT: threshold = (1<<(r-1)) - 1 + (x<0 ? 1 : 0)
+//
+// This is used by elementwise operators (ADD, MUL, SUM) where the
+// requantize parameters are uniform scalars across the operation.
+// ---------------------------------------------------------------------------
+inline int32_t MqmScalarInline(int32_t x, int32_t mult, int shift) {
+  const int ls = shift > 0 ? shift : 0;
+  const int rs = shift < 0 ? -shift : 0;
+  if (ls > 0) x = x << ls;
+  // SRDMH: sign-dependent nudge (round half away from zero)
+  {
+    const bool overflow = (x == std::numeric_limits<int32_t>::min() &&
+                           mult == std::numeric_limits<int32_t>::min());
+    const int64_t ab = (int64_t)x * mult;
+    const int32_t nudge = ab >= 0 ? (1 << 30) : (1 - (1 << 30));
+    x = overflow ? std::numeric_limits<int32_t>::max()
+                 : static_cast<int32_t>(
+                       std::min<int64_t>(
+                           std::max<int64_t>((ab + nudge) >> 31,
+                             std::numeric_limits<int32_t>::min()),
+                           std::numeric_limits<int32_t>::max()));
+  }
+  // RDBPOT: sign-dependent threshold
+  if (rs > 0) {
+    const int32_t mask = (1 << rs) - 1;
+    const int32_t remainder = x & mask;
+    const int32_t threshold = (mask >> 1) + (x < 0 ? 1 : 0);
+    x = (x >> rs) + (remainder > threshold ? 1 : 0);
+  }
+  return x;
+}
+
 inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
                                const int32_t* shift_in, int out_d) {
   int out_ch = 0;
@@ -50,13 +88,17 @@ inline void PrepareShiftParams(uint8_t* left, uint8_t* right,
   }
 }
 
-// PostprocessAcc: apply per-channel quantize/clamp to accumulator buffer.
-// Layout: accs[out_x * out_d + out_ch] (HWC format).
-// Outer loop: out_ch blocks (vl = vsetvl_e32m8); inner: out_x scalar.
+// ---------------------------------------------------------------------------
+// PostprocessAcc: vectorized requantization using vsmul/vssra.
 //
-// Fast path for out_d <= VLMAX (single out_ch pass):
-//   Process 4 out_x positions per iteration to reduce loop overhead.
-//   Bias/mult/shift vectors are loaded once and reused across out_x.
+// Uses RVV vsmul (RNU rounding mode) which differs from gemmlowp's
+// SaturatingRoundingDoublingHighMul by at most ±1 LSB for negative products
+// at exact tie boundaries. This is acceptable for the Conv/DW post-processing
+// path (consistent with Phase A-C8 behavior).
+//
+// The elementwise operators (ADD, MUL, SUM) use MqmScalarInline instead for
+// bit-accuracy, since they are called fewer times and can afford scalar cost.
+// ---------------------------------------------------------------------------
 inline void PostprocessAcc(const int32_t* accs, const int32_t* bias_data,
                            const uint8_t* lshift, const int32_t* multiplier,
                            const uint8_t* rshift, int32_t out_offset,
@@ -119,24 +161,22 @@ inline void PostprocessAcc16(const int32_t* accs, const int32_t* bias_data,
                              int16_t out_min, int16_t out_max,
                              int16_t* out_data, int out_w, int out_d) {
   // Scalar post-processing to ensure absolute bit-exactness with TFLM.
-  // The user requested correctness over performance for this stage.
   for (int out_x = 0; out_x < out_w; ++out_x) {
     for (int c = 0; c < out_d; ++c) {
       int64_t acc = (int64_t)accs[out_x * out_d + c];
       if (bias_data) {
         acc += (int64_t)bias_data[c];
       }
-
       int shift = (int8_t)lshift[c] - (int8_t)rshift[c];
       int32_t result =
           tflite::MultiplyByQuantizedMultiplier(acc, multiplier[c], shift);
-
       result = std::max<int32_t>(result, out_min);
       result = std::min<int32_t>(result, out_max);
       out_data[out_x * out_d + c] = (int16_t)result;
     }
   }
 }
+
 }  // namespace coralnpu_v2::opt::litert_micro
 
 #endif  // SW_OPT_LITERT_MICRO_ACCUMULATOR_UTIL_H_

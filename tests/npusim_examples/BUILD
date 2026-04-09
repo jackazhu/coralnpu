@@ -104,6 +104,7 @@ coralnpu_v2_binary(
         "//sw/opt:rvv_opt",
         "//sw/opt/litert-micro:conv",
         "//sw/opt/litert-micro:depthwise_conv",
+        "//sw/opt/litert-micro:elementwise_rvv",
         "//sw/opt/litert-micro:pad",
         "@tflite_micro//tensorflow/lite/micro:micro_framework",
         "@tflite_micro//tensorflow/lite/micro:micro_log",
@@ -165,4 +166,15 @@ generate_cc_arrays(
     name = "bcresnet_sc35_int8_tflite_h",
     src = "models/bcresnet_sc35_int8.tflite",
     out = "bcresnet_sc35_int8_tflite.h",
+)
+
+py_binary(
+    name = "npusim_get_all35_output",
+    srcs = ["npusim_get_all35_output.py"],
+    data = [":run_bcresnet_binary"],
+    deps = [
+        "//sw/coralnpu_sim:coralnpu_v2_sim_utils_lib",
+        "@bazel_tools//tools/python/runfiles",
+        requirement("numpy"),
+    ],
 )
